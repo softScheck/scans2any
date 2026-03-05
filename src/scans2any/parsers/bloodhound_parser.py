@@ -4,6 +4,8 @@ Extracts information (Hostname & OS) from Bloodhound JSON files.
 Does not extract any services, ports or IP-Adresses!
 """
 
+from pathlib import Path
+
 from scans2any.helpers.utils import find_os, read_json
 from scans2any.internal import Host, Infrastructure
 
@@ -26,13 +28,13 @@ def add_arguments(parser):
     )
 
 
-def parse(filename: str) -> Infrastructure:
+def parse(filename: str | Path) -> Infrastructure:
     """
     Parses Bloodhound JSON Computers report.
 
     Parameters
     ----------
-    filename : str
+    filename : str | Path
         Path to JSON Bloodhound report
 
     Returns
@@ -42,13 +44,18 @@ def parse(filename: str) -> Infrastructure:
     """
 
     try:
-        infra = Infrastructure(__parse_json(filename), identifier="Bloodhound")
+        # Bloodhound is trusted for hostnames and OS
+        infra = Infrastructure(
+            __parse_json(filename),
+            identifier="Bloodhound",
+            trusted_fields={"host": ["hostname", "os"]},
+        )
     except Exception:
         raise
     return infra
 
 
-def __parse_json(filename: str) -> list[Host]:
+def __parse_json(filename: str | Path) -> list[Host]:
     hosts: list[Host] = []
     data: dict[str, dict] = read_json(filename, dict)
 
@@ -68,6 +75,10 @@ def __parse_json(filename: str) -> list[Host]:
                     address=set(),
                     hostnames=set([name.lower()]),
                     os=hostos,
+                    trusted_fields={
+                        "hostname",
+                        "os",
+                    },  # Bloodhound is accurate on these
                 )
             )
         except (KeyError, IndexError):

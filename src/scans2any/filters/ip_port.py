@@ -1,3 +1,5 @@
+"""Filter hosts by IP address allow/blocklists and port allow/blocklists."""
+
 from ipaddress import ip_address, summarize_address_range
 
 from scans2any.internal import Infrastructure, printer
@@ -40,68 +42,77 @@ def apply_filter(infra: Infrastructure, args):
 
     # Process Allowlisted and Blocklisted IPs
     if args.ip_allowlist:
-        hosts = set()  # Use set to avoid redundancies
+        allowed_ips = set()
         for address_range in args.ip_allowlist:
             try:
                 start_ip, end_ip = address_range.split("-")
                 networks = summarize_address_range(
                     ip_address(start_ip), ip_address(end_ip)
                 )
+                for network in networks:
+                    for ip in network:
+                        allowed_ips.add(str(ip))
             except ValueError:
                 printer.error(
                     f"Invalid IP range: {address_range}. Please use the format start_ip-end_ip."
                 )
                 return
-            for network in networks:
-                for ip in network:
-                    host = infra.get_host_by_address(str(ip))
-                    if host:
-                        hosts.add(host)
-        infra.hosts = list(hosts)
+
+        infra.hosts = [
+            h for h in infra.hosts if any(ip in allowed_ips for ip in h.address)
+        ]
 
     if args.ip_blocklist:
+        blocked_ips = set()
         for address_range in args.ip_blocklist:
             try:
                 start_ip, end_ip = address_range.split("-")
                 networks = summarize_address_range(
                     ip_address(start_ip), ip_address(end_ip)
                 )
+                for network in networks:
+                    for ip in network:
+                        blocked_ips.add(str(ip))
             except ValueError:
                 printer.error(
                     f"Invalid IP range: {address_range}. Please use the format start_ip-end_ip."
                 )
                 return
-            for network in networks:
-                for ip in network:
-                    infra.remove_host(str(ip))
+
+        for host in infra.hosts:
+            host.address = set(ip for ip in host.address if ip not in blocked_ips)
+        infra.hosts = [h for h in infra.hosts if h.address]
 
     # Process Allowlisted and Blocklisted Ports for each host
-    for host in infra.hosts:
-        # Allowlisted Ports
+    if args.port_allowlist or args.port_blocklist:
+        allowed_ports = set()
         if args.port_allowlist:
-            allowed_services = set()
             for port_range in args.port_allowlist:
                 try:
                     start_port, end_port = map(int, port_range.split("-"))
+                    allowed_ports.update(range(start_port, end_port + 1))
                 except ValueError:
                     printer.error(
                         f"Invalid port range: {port_range}. Please use the format start_port-end_port."
                     )
                     return
-                for port in range(start_port, end_port + 1):
-                    service = host.get_service_by_port(port)
-                    if service:
-                        allowed_services.add(service)
-            host.services = list(allowed_services)
 
-        # Blocklisted Ports
+        blocked_ports = set()
         if args.port_blocklist:
             for port_range in args.port_blocklist:
                 try:
                     start_port, end_port = map(int, port_range.split("-"))
+                    blocked_ports.update(range(start_port, end_port + 1))
                 except ValueError:
                     printer.error(
                         f"Invalid port range: {port_range}. Please use the format start_port-end_port."
                     )
                     return
-                host.remove_services((start_port, end_port))
+
+        for host in infra.hosts:
+            if args.port_allowlist:
+                host.services = [s for s in host.services if s.port in allowed_ports]
+            if args.port_blocklist:
+                host.services = [
+                    s for s in host.services if s.port not in blocked_ports
+                ]

@@ -1,3 +1,5 @@
+"""Remove uninformative or noisy hostnames from hosts."""
+
 from scans2any.internal import Host, SortedSet
 
 PRIORITY = 2

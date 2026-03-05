@@ -1,7 +1,6 @@
 """Prints a flattened CSV representation of the infrastructure."""
 
 from scans2any.internal import Infrastructure, printer
-from scans2any.writers.dataframe_creator import create_flat_dataframe
 
 NAME = "csv"
 PROPERTIES = {
@@ -27,6 +26,9 @@ def write(infra: Infrastructure, args) -> str:
     Convert the internal representation of the infrastructure
     into the csv format.
     """
+    # Deferred import: keeps pandas/numpy out of the startup critical path.
+    from scans2any.writers.dataframe_creator import create_flat_dataframe
+
     infra.cleanup_names(",-")  # Comma as separator, minus for multiple items
 
     # Create a flattened DataFrame (one row per service)

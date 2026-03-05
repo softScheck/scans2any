@@ -1,3 +1,5 @@
+"""Remove hosts with no identified open services from the infrastructure."""
+
 from scans2any.internal import Infrastructure
 
 PRIORITY = 4

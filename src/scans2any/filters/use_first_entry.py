@@ -1,3 +1,5 @@
+"""Resolve collisions by keeping only the first entry in each sorted set."""
+
 from scans2any.internal import Host, SortedSet
 
 PRIORITY = 5

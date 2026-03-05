@@ -6,6 +6,7 @@ This can be used to merge hosts of one infrastructure or merge mutliple
 infrastructures with this as the priority infrastructure.
 """
 
+from pathlib import Path
 from typing import Any
 
 import yaml
@@ -15,14 +16,14 @@ from scans2any.internal import Host, Infrastructure, Service, SortedSet, printer
 
 
 def parse(
-    filename: str = "MERGE_FILE.yaml",
+    filename: str | Path = "MERGE_FILE.yaml",
 ) -> tuple[Infrastructure, list[dict] | None]:
     """
     Parses .yaml merge file and generates an Infrastructure from it.
 
     Parameters
     ----------
-    filename : str, optional
+    filename : str | Path, optional
         Filename of the .yaml merge file, by default "MERGE_FILE.yaml"
 
     Returns
@@ -44,6 +45,7 @@ def parse(
     custom_entries: dict[str, dict] = loaded_data.get("custom-entries") or {}
 
     infra = Infrastructure(identifier="Merge File")
+    new_hosts = []
 
     if __check_for_ambiguity(merge_data):
         printer.failure("Fix ambiguous entries in merge file.")
@@ -55,16 +57,17 @@ def parse(
             new_host = Host(
                 address=set([hostname]),
                 hostnames=set(),
-                os=set(info["os"]) if "os" in info else set(),
+                os=SortedSet(info["os"]) if "os" in info else SortedSet(),
             )
         else:
             new_host = Host(
                 address=set(),
                 hostnames=set([hostname]),
-                os=set(info["os"]) if "os" in info else set(),
+                os=SortedSet(info["os"]) if "os" in info else SortedSet(),
             )
 
         # Fill with tcp services
+        new_services = []
         tcp_ports = info.get("tcp_ports", {})
         for port, service_info in tcp_ports.items():
             new_service = Service(
@@ -77,7 +80,7 @@ def parse(
                 if "banners" in service_info
                 else SortedSet(),
             )
-            new_host.add_service(new_service)
+            new_services.append(new_service)
 
         # Fill with udp services
         udp_ports = info.get("udp_ports", {})
@@ -92,9 +95,10 @@ def parse(
                 if "banners" in service_info
                 else SortedSet(),
             )
-            new_host.add_service(new_service)
+            new_services.append(new_service)
 
-        infra.add_host(new_host)
+        new_host.add_services(new_services)
+        new_hosts.append(new_host)
 
     for host, entries in custom_entries.items():
         if not __custom_entries_format_ok(entries):
@@ -105,6 +109,7 @@ def parse(
             hostnames=SortedSet(entries.get("hostnames", [])),
             os=SortedSet([os] if (os := entries.get("os")) else []),
         )
+        new_services = []
         for service in entries.get("ports", []):
             port, proto = service["port"].split("/")
             new_service = Service(
@@ -115,10 +120,12 @@ def parse(
                     [banner] if (banner := service.get("banner")) else []
                 ),
             )
-            new_host.add_service(new_service)
+            new_services.append(new_service)
 
-        infra.add_host(new_host)
+        new_host.add_services(new_services)
+        new_hosts.append(new_host)
 
+    infra.add_hosts(new_hosts)
     printer.success(f"Parsing of {len(infra.hosts)} hosts finished without errors")
     return infra, auto_merge_data
 

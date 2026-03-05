@@ -1,14 +1,20 @@
+"""General-purpose utility functions shared across the scans2any codebase."""
+
+import argparse
+import functools
 import ipaddress
 import json
 import re
-from os import path
+from pathlib import Path
 from typing import TypeVar
 
-from partial_json_parser import loads as json_partial_loads  # type: ignore
+from partial_json_parser import loads as json_partial_loads
 
 from scans2any.internal import printer
 
-# Define valid column names (normalized to lowercase for comparison)
+# Built-in column names (normalized lowercase -> canonical display name).
+# Custom columns contributed by parsers are NOT listed here; they are
+# collected at startup via parsers.parser_custom_columns.
 VALID_COLUMNS = {
     "ip-addresses": "IP-Addresses",
     "hostnames": "Hostnames",
@@ -19,62 +25,91 @@ VALID_COLUMNS = {
 }
 
 
-def validate_columns(columns: tuple[str, ...]) -> tuple[str, ...]:
+def validate_columns(
+    columns: tuple[str, ...],
+    extra_columns: dict[str, str] | None = None,
+    default_columns: tuple[str, ...] | None = None,
+    *,
+    allow_any: bool = False,
+) -> tuple[str, ...]:
     """
     Validates column names and normalizes them.
 
     Parameters
     ----------
     columns : tuple[str, ...]
-        The columns specified by the user
+        The columns specified by the user.
+    extra_columns : dict[str, str] | None
+        Additional valid columns contributed by parsers
+        (normalized-lowercase -> canonical name).
+    allow_any : bool
+        When True, unknown column names are passed through as-is instead of
+        raising an error (used when an open-format parser like json_parser is
+        available and may produce arbitrary custom fields).
 
     Returns
     -------
     tuple[str, ...]
-        Validated and normalized column names
+        Validated and normalized column names.
+
+    Raises
+    ------
+    argparse.ArgumentTypeError
+        When a column name is not known and allow_any is False.
     """
+    all_known: dict[str, str] = {**VALID_COLUMNS, **(extra_columns or {})}
+
+    if not columns:
+        return tuple(default_columns) if default_columns else tuple()
 
     valid_columns = []
+
+    first_col = columns[0]
+    if first_col.startswith(("+", "-")):
+        valid_columns = (
+            list(default_columns) if default_columns else list(all_known.values())
+        )
+
     for col in columns:
+        operator = None
+        if col.startswith(("+", "-")):
+            operator = col[0]
+            col = col[1:]
+
         col_lower = col.lower()
-        if col_lower in VALID_COLUMNS:
-            valid_columns.append(VALID_COLUMNS[col_lower])
+        resolved_col = None
+
+        if col_lower in all_known:
+            resolved_col = all_known[col_lower]
+        elif allow_any:
+            resolved_col = col
+
+        if resolved_col:
+            if operator == "-":
+                if resolved_col in valid_columns:
+                    valid_columns.remove(resolved_col)
+            elif operator == "+":
+                if resolved_col not in valid_columns:
+                    valid_columns.append(resolved_col)
+            else:
+                if resolved_col not in valid_columns:
+                    valid_columns.append(resolved_col)
         else:
-            printer.warning(f"Invalid column: '{col}'. Ignoring this column.")
+            known_names = ", ".join(sorted(all_known.values()))
+            raise argparse.ArgumentTypeError(
+                f"Unknown column '{col}'. Known columns: {known_names}"
+            )
 
     if not valid_columns:
         printer.warning("No valid columns specified. Using default columns.")
-        return tuple(VALID_COLUMNS.values())
+        return tuple(default_columns) if default_columns else tuple(all_known.values())
 
     return tuple(valid_columns)
-
-
-def joinit(lst, delimiter):
-    """
-    Joins a list using `delimiter` as in-between-item.
-    """
-    if not lst:
-        return []
-
-    joined_list = [lst[0]]
-    for item in lst[1:]:
-        joined_list.append(delimiter)
-        joined_list.append(item)
-
-    return joined_list
 
 
 def is_valid_ip(address: str) -> bool:
     try:
         ipaddress.ip_address(address)
-        return True
-    except ValueError:
-        return False
-
-
-def is_valid_ipv4(address: str | None) -> bool:
-    try:
-        ipaddress.IPv4Address(address)
         return True
     except ValueError:
         return False
@@ -163,25 +198,6 @@ def trustworthiness_os(info_origin: str) -> int:
     return 0
 
 
-def no_common_elements(lists: list[list]):
-    """
-    Check if any two of the lists share an element.
-
-    Parameters
-    ----------
-    lists : list
-        List of lists to be compared for shared elements.
-    """
-
-    n = len(lists)
-    for i in range(n):
-        for j in range(i + 1, n):
-            if bool(set(lists[i]) & set(lists[j])):
-                return False
-
-    return True
-
-
 T = TypeVar("T")
 
 
@@ -193,13 +209,14 @@ class PartialParsingFailedError(Exception):
     pass
 
 
-def is_special_fd(filename: str) -> bool:
-    return bool(re.match(r"^(?:/proc/self/fd/|/dev/fd/)\d+$", filename))
+def is_special_fd(filename: str | Path) -> bool:
+    return bool(re.match(r"^(?:/proc/self/fd/|/dev/fd/)\d+$", str(filename)))
 
 
-def read_json[T](filename: str, return_type: type[T]) -> T:
-    if not is_special_fd(filename) and (
-        not path.isfile(filename) or path.getsize(filename) == 0
+def read_json[T](filename: str | Path, return_type: type[T]) -> T:
+    file_path = Path(filename)
+    if not is_special_fd(str(filename)) and (
+        not file_path.is_file() or file_path.stat().st_size == 0
     ):
         raise FileError(f"File {filename} is empty or does not exist.")
 
@@ -211,11 +228,16 @@ def read_json[T](filename: str, return_type: type[T]) -> T:
     except json.JSONDecodeError as e:
         # Fallback to partial parsing
         try:
-            return json_partial_loads(content)
+            return json_partial_loads(content)  # type: ignore[return-value]
         except Exception as f:
             raise PartialParsingFailedError(
                 f"JSON parsing '{e}' and partial parsing '{f}' failed."
             ) from e
+
+
+_DOMAIN_REGEX = re.compile(
+    r"^(?!-)(?:[a-zA-Z0-9-]{1,63}|(?:[a-zA-Z0-9-]{1,63}\.)+[a-zA-Z]{2,})$"
+)
 
 
 def match_dns(dns: str) -> bool:
@@ -232,11 +254,10 @@ def match_dns(dns: str) -> bool:
     bool
         True if the string is a valid DNS name, False otherwise.
     """
-    domain_regex = (
-        r"^(?!-)(?:[a-zA-Z0-9-]{1,63}|(?:[a-zA-Z0-9-]{1,63}\.)+[a-zA-Z]{2,})$"
-    )
+    return _DOMAIN_REGEX.match(dns) is not None
 
-    return re.match(domain_regex, dns) is not None
+
+_FQDN_REGEX = re.compile(r"^(?!\-)([a-zA-Z0-9\-]{1,63}\.)+[a-zA-Z]{2,}$")
 
 
 def match_fqdn(dns: str) -> bool:
@@ -253,19 +274,19 @@ def match_fqdn(dns: str) -> bool:
     bool
         True if the string is a valid FQDN name, False otherwise.
     """
-    domain_regex = r"^(?!\-)([a-zA-Z0-9\-]{1,63}\.)+[a-zA-Z]{2,}$"
-
-    return re.match(domain_regex, dns) is not None
+    return _FQDN_REGEX.match(dns) is not None
 
 
-def cleanup(string: str, chars_to_escape: str) -> str:
+@functools.lru_cache(maxsize=32)
+def _get_cleanup_regex(chars_to_escape: str) -> re.Pattern:
     escaped_chars = re.escape(chars_to_escape)
-
     # Construct a regex pattern that matches any of the characters to be escaped
     # The regex looks for any character in escaped_chars that is not already preceded by a backslash
     pattern = r"(?<!\\)([" + escaped_chars + "])"
+    return re.compile(pattern)
 
+
+def cleanup(string: str, chars_to_escape: str) -> str:
+    regex = _get_cleanup_regex(chars_to_escape)
     # Replace any unescaped special character with its escaped version
-    string = re.sub(pattern, r"\\\1", string)
-
-    return string
+    return regex.sub(r"\\\1", string)

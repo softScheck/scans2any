@@ -3,14 +3,20 @@ Nessus Parser
 """
 
 import ast
+from pathlib import Path
 
-from defusedxml.ElementTree import iterparse  # type: ignore
+from defusedxml.ElementTree import iterparse
 
 from scans2any.helpers.utils import find_os, is_valid_ip
 from scans2any.internal import Host, Infrastructure, Service, SortedSet
 
 CONFIG = {
     "extensions": [".nessus"],
+}
+
+# Custom columns produced by this parser that can be requested via -c
+CUSTOM_COLUMNS: dict[str, str] = {
+    "vulnerability-type": "Vulnerability-Type",
 }
 
 
@@ -109,13 +115,13 @@ class NessusReport:
                         elem.clear()
 
 
-def parse(filename: str) -> Infrastructure:
+def parse(filename: str | Path) -> Infrastructure:
     """
     Parses `csv` export of nessus scan.
 
     Parameters
     ----------
-    filename : str
+    filename : str | Path
         Path to nessus `csv` export.
 
     Returns
@@ -125,13 +131,15 @@ def parse(filename: str) -> Infrastructure:
     """
 
     infra = Infrastructure(identifier="Nessus")
+    new_hosts = []
 
     nessus_report = NessusReport(filename)
     for item in nessus_report:
         new_host = __parse_report_item(item)
         if new_host:
-            infra.add_host(new_host)
+            new_hosts.append(new_host)
 
+    infra.add_hosts(new_hosts)
     return infra
 
 
@@ -173,11 +181,13 @@ def __parse_report_item(host: list) -> Host | None:
     new_host.os = set((osvalue, "Nessus") for osvalue in detected_os)
 
     # Service information loop
+    new_services = []
     for item in host[1:]:
         port = int(item["port"])
         protocol = item.get("protocol")
         service = item.get("svc_name")
         plugin_name = item.get("pluginName")
+        severity = int(item.get("severity", 0))
 
         if port == 0:
             # Get additional DNS Names
@@ -192,11 +202,18 @@ def __parse_report_item(host: list) -> Host | None:
                             "Unexpected format in Additional DNS Hostnames"
                         )
         else:
+            vuln_types = (
+                SortedSet([plugin_name[:50].strip()])
+                if plugin_name and severity >= 2
+                else SortedSet()
+            )
+
             new_service = Service(
                 port=port,
                 protocol=protocol,
                 service_names=SortedSet([service]),
                 banners=SortedSet(),
+                custom_fields={"Vulnerability-Type": vuln_types} if vuln_types else {},
             )
 
             # Get SSH and HTTP data
@@ -217,8 +234,9 @@ def __parse_report_item(host: list) -> Host | None:
                 # pluginID="106375" pluginName="nginx HTTP Server Detection"
                 # pluginID="24260" pluginName="HyperText Transfer Protocol (HTTP) Information"
 
-            new_host.add_service(new_service)
+            new_services.append(new_service)
 
+    new_host.add_services(new_services)
     return new_host
 
 

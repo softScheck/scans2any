@@ -4,8 +4,10 @@ Nmap Parser
 Nmap Parser based on [python-libnmap](https://libnmap.readthedocs.io/en/latest/objects.html)
 """
 
-from libnmap.objects.os import NmapOSMatch  # type: ignore
-from libnmap.parser import NmapHost, NmapParser, NmapParserException  # type: ignore
+from pathlib import Path
+
+from libnmap.objects.os import NmapOSMatch
+from libnmap.parser import NmapHost, NmapParser, NmapParserException
 
 from scans2any.helpers.utils import find_os, match_fqdn
 from scans2any.internal import Host, Infrastructure, Service, SortedSet
@@ -29,13 +31,13 @@ def add_arguments(parser):
     )
 
 
-def parse(filename: str) -> Infrastructure:
+def parse(filename: str | Path) -> Infrastructure:
     """
     Parses Nmap XML report.
 
     Parameters
     ----------
-    filename : str
+    filename : str | Path
         Path to XML Nmap report
 
     Returns
@@ -45,7 +47,7 @@ def parse(filename: str) -> Infrastructure:
     """
 
     try:
-        nmap_report = NmapParser.parse_fromfile(filename)
+        nmap_report = NmapParser.parse_fromfile(str(filename))
     except NmapParserException:
         # Try to parse incomplete aborted Nmap scan
         try:
@@ -54,6 +56,7 @@ def parse(filename: str) -> Infrastructure:
             raise
 
     infra = Infrastructure(identifier="Nmap")
+    new_hosts = []
 
     for nmap_host in nmap_report.hosts:
         nmap_os: set[tuple[str, str]] = set(
@@ -101,7 +104,12 @@ def parse(filename: str) -> Infrastructure:
             address=set([nmap_host.address]), hostnames=lower_hostnames, os=nmap_os
         )
 
+        new_services = []
         for nmap_service in nmap_host.services:
+            # With UDP-Scans nmap sets the state to "open|filtered" if no answer
+            # was received.
+            if nmap_service.protocol == "udp" and nmap_service.state != "open":
+                continue
             new_service = Service(
                 port=nmap_service.port,
                 protocol=nmap_service.protocol,
@@ -110,10 +118,12 @@ def parse(filename: str) -> Infrastructure:
                 if nmap_service.banner
                 else SortedSet(),
             )
-            new_host.add_service(new_service)
+            new_services.append(new_service)
+        new_host.add_services(new_services)
 
-        infra.add_host(new_host)
+        new_hosts.append(new_host)
 
+    infra.add_hosts(new_hosts)
     return infra
 
 

@@ -1,0 +1,558 @@
+# Automatic merge conflict solving
+#
+# If any of the listed combinations of service names [and port] (e.g. `http` and
+# `www`) are found as service names for the same port, the key is used as the
+# conflict-solving service name. Rules are applied in order; once a rule matches
+# and rewrites service names, later rules see the updated names.
+auto-merge:
+
+# ── OS Rules ─────────────────────────────────────────────────────────────────
+# When multiple conflicting OS identifiers are detected, resolve to "unknown".
+  - os: [bsd, linux]
+    key: [unknown]
+  - os: [bsd, windows]
+    key: [unknown]
+  - os: [bsd, macos]
+    key: [unknown]
+  - os: [macos, linux]
+    key: [unknown]
+  - os: [macos, windows]
+    key: [unknown]
+  - os: [windows, linux]
+    key: [unknown]
+
+# ── HTTP / HTTPS / Web ───────────────────────────────────────────────────────
+# Port-specific rules first, catch-all last.
+  - service-names: [http, www]
+    key: [http]
+  - service-names: [https, www]
+    key: [https]
+  - service-names: [http, https, www]
+    port: 443
+    key: [https]
+  - service-names: [http, https]
+    ports: [443, 8443, 18084, 31267]
+    key: [https]
+  - service-names: [http, https]
+    port: 80
+    key: [http]
+  - service-names: [http, https, krb524]
+    port: 4444
+    key: [https]
+  - service-names: [homepage, http]
+    key: [http]
+  - service-names: [homepage, http, https]
+    key: [https]
+  - service-names: [dc, https, www]
+    key: [https]
+  - service-names: [abyss, http]
+    port: 9999
+    key: [http]
+  - service-names: [http, wsman]
+    port: 5985
+    key: [http]
+  - service-names: [http, http-proxy]
+    port: 5800
+    key: [http]
+  - service-names: [https, https-alt]
+    port: 8443
+    key: [https]
+  - service-names: [https, wso2esb-console]
+    port: 9444
+    key: [https]
+  - service-names: [https, powerchuteplus]
+    port: 6547
+    key: [https]
+  - service-names: [accuracer, https]
+    port: 12007
+    key: [https]
+  - service-names: [http-proxy, https]
+    port: 8080
+    key: [http/https/proxy]
+  # Catch-all for remaining http+https conflicts
+  - service-names: [http, https]
+    key: [http/https]
+
+# ── HTTP Proxy ────────────────────────────────────────────────────────────────
+  - service-names: [http_proxy, https]
+    key: [http_proxy]
+  - service-names: [http-proxy, http_proxy]
+    key: [http_proxy]
+  - service-names: [http, http-proxy, http_proxy]
+    key: [http_proxy]
+  - service-names: [http, http_proxy, https]
+    key: [http_proxy]
+  - service-names: [http, http_proxy, squid-http]
+    port: 3128
+    key: [squid-http]
+  - service-names: [http, http_proxy, https, opsmessaging]
+    port: 8090
+    key: [https]
+
+# ── VNC ───────────────────────────────────────────────────────────────────────
+  - service-names: [http, vnc-http]
+    key: [http/vnc-http]
+  - service-names: [http-proxy, vnc-http]
+    key: [http/vnc-http]
+  - service-names: [vnc, vnc-1]
+    port: 5901
+    key: [vnc]
+  # NOTE: "telelpathattack" is nmap's own misspelling of "TelepathAttack" in
+  # nmap-services. The spelling here must match nmap's to trigger the rule.
+  - service-names: [telelpathattack, ultravnc-dsm]
+    port: 5011
+    key: [ultravnc-dsm]
+
+# ── Mail ──────────────────────────────────────────────────────────────────────
+  - service-names: [smtp, smtps]
+    ports: [465, 587]
+    key: [smtps]
+  - service-names: [smtp, smtps]
+    port: 25
+    key: [smtp]
+  - service-names: [imap, imaps]
+    port: 993
+    key: [imaps]
+  - service-names: [imap, imap-proxy]
+    key: [imap]
+  - service-names: [pop3, pop3s]
+    port: 995
+    key: [pop3s]
+  - service-names: [lmtp, smtp]
+    key: [smtp]
+
+# ── DNS / Discovery ──────────────────────────────────────────────────────────
+  - service-names: [dns, domain]
+    key: [dns]
+  - service-names: [mdns, zeroconf]
+    port: 5353
+    key: [mdns]
+  - service-names: [ssdp, upnp]
+    port: 1900
+    key: [ssdp]
+  - service-names: [commplex-main, upnp]
+    port: 5000
+    key: [upnp]
+  - service-names: [slp, svrloc]
+    port: 427
+    key: [slp]
+
+# ── SMB / NetBIOS / CIFS ─────────────────────────────────────────────────────
+  - service-names: [cifs, netbios-ssn]
+    port: 445
+    key: [cifs]
+  - service-names: [cifs, microsoft-ds]
+    port: 445
+    key: [microsoft-ds]
+  - service-names: [cifs, microsoft-ds, smb]
+    port: 445
+    key: [smb]
+  - service-names: [cifs, microsoft-ds, netbios-ssn]
+    port: 445
+    key: [smb]
+  - service-names: [cifs, smb]
+    port: 445
+    key: [smb]
+  - service-names: [netbios-ssn, smb]
+    port: 139
+    key: [smb]
+  - service-names: [microsoft-ds, smb]
+    port: 139
+    key: [smb]
+
+# ── RPC ───────────────────────────────────────────────────────────────────────
+  - service-names: [dce-rpc, rpc]
+    key: [rpc]
+  - service-names: [dce-rpc, msrpc]
+    key: [rpc]
+  - service-names: [dce-rpc, msrpc, ncacn_http]
+    key: [rpc]
+  - service-names: [dce-rpc, ncacn_http, rpc]
+    key: [rpc]
+  - service-names: [dce-rpc, epmap, msrpc]
+    port: 135
+    key: [msrpc]
+  - service-names: [epmap, msrpc]
+    port: 135
+    key: [msrpc]
+  - service-names: [rpcbind, sunrpc]
+    key: [rpcbind/sunrpc]
+  - service-names: [rpc, rpcbind]
+    key: [rpc]
+  - service-names: [rpc-portmapper, rpcbind]
+    key: [rpc]
+  - service-names: [rpc, rpc-portmapper]
+    key: [rpc]
+  - service-names: [rpc, rpc-portmapper, rpcbind]
+    key: [rpc]
+  - service-names: [http-rpc-epmap, ncacn_http]
+    port: 593
+    key: [ncacn_http]
+  - service-names: [rpc-status, status]
+    key: [rpc]
+  - service-names: [rpc, status]
+    key: [rpc]
+  - service-names: [nlockmgr, rpc-nlockmgr]
+    key: [rpc]
+  - service-names: [nlockmgr, rpc]
+    key: [rpc]
+  - service-names: [rpc, rpc-nlockmgr]
+    key: [rpc]
+  - service-names: [rpc, rpc-status]
+    key: [rpc]
+  - service-names: [nlockmgr, rpc-status]
+    key: [rpc]
+  - service-names: [lockd, rpc-nlockmgr]
+    key: [lockd]
+  - service-names: [dce-rpc, smap]
+    port: 3731
+    key: [dce-rpc]
+  - service-names: [dce-rpc, iad3]
+    port: 1032
+    key: [dce-rpc]
+  - service-names: [dce-rpc, zincite-a]
+    port: 1034
+    key: [dce-rpc]
+  - service-names: [dce-rpc, dcutility]
+    port: 1044
+    key: [dce-rpc]
+  - service-names: [dce-rpc, sge_execd]
+    port: 6445
+    key: [dce-rpc]
+  - service-names: [boe-pagesvr, dce-rpc]
+    port: 6405
+    key: [dce-rpc]
+  - service-names: [dce-rpc, tarp]
+    port: 6442
+    key: [dce-rpc]
+  - service-names: [dce-rpc, sge_qmaster]
+    port: 6444
+    key: [dce-rpc]
+  - service-names: [dce-rpc, zephyr-clt]
+    port: 2103
+    key: [dce-rpc]
+  - service-names: [dce-rpc, eklogin]
+    port: 2105
+    key: [dce-rpc]
+  - service-names: [dce-rpc, msmq-mgmt]
+    port: 2107
+    key: [dce-rpc]
+  - service-names: [dce-rpc, idmaps]
+    port: 1884
+    key: [dce-rpc]
+  - service-names: [dce-rpc, ftranhc]
+    port: 1105
+    key: [dce-rpc]
+  - service-names: [dce-rpc, kpop]
+    port: 1109
+    key: [dce-rpc]
+  - service-names: [dce-rpc, optimanet]
+    port: 2408
+    key: [dce-rpc]
+  - service-names: [dce-rpc, vrml-multi-use]
+    port: 4261
+    key: [dce-rpc]
+  - service-names: [bspne-pcc, dce-rpc]
+    port: 1252
+    key: [dce-rpc]
+  - service-names: [ardt, dce-rpc]
+    port: 1826
+    key: [dce-rpc]
+  - service-names: [dce-rpc, udt_os]
+    port: 1382
+    key: [dce-rpc]
+  - service-names: [cplscrambler-al, dce-rpc]
+    port: 1088
+    key: [dce-rpc]
+  - service-names: [dce-rpc, odsi]
+    port: 1308
+    key: [dce-rpc]
+  - service-names: [dce-rpc, watcomdebug]
+    port: 3563
+    key: [dce-rpc]
+  - service-names: [dce-rpc, pdps]
+    port: 1314
+    key: [dce-rpc]
+  - service-names: [dce-rpc, radsec]
+    port: 2083
+    key: [dce-rpc]
+  - service-names: [dce-rpc, noadmin]
+    port: 1921
+    key: [dce-rpc]
+  - service-names: [dce-rpc, timeflies]
+    port: 1362
+    key: [dce-rpc]
+  - service-names: [a17-an-an, dce-rpc]
+    port: 4599
+    key: [dce-rpc]
+  - service-names: [dce-rpc, sbl]
+    port: 1039
+    key: [dce-rpc]
+  - service-names: [aplx, dce-rpc]
+    port: 1134
+    key: [dce-rpc]
+  - service-names: [dce-rpc, omnivision]
+    port: 1135
+    key: [dce-rpc]
+  - service-names: [dce-rpc, edtools]
+    port: 1142
+    key: [dce-rpc]
+  - service-names: [dce-rpc, rdcenter]
+    port: 4756
+    key: [dce-rpc]
+  - service-names: [boldsoft-lm, dce-rpc]
+    port: 2961
+    key: [dce-rpc]
+  - service-names: [dce-rpc, msrpc, zephyr-clt]
+    port: 2103
+    key: [rpc]
+  - service-names: [dce-rpc, eklogin, msrpc]
+    port: 2105
+    key: [rpc]
+  - service-names: [dce-rpc, msmq-mgmt, msrpc]
+    port: 2107
+    key: [rpc]
+  - service-names: [mountd, rpc-mountd]
+    key: [mountd]
+  - service-names: [mountd, rpc]
+    key: [mountd]
+  - service-names: [rpc, rpc-mountd]
+    key: [mountd]
+  - service-names: [rpc, rpc-mountd, rpcbind]
+    key: [mountd]
+  - service-names: [mountd, rpc-nfs_acl, rpc-status]
+    port: 2049
+    key: [nfs]
+  - service-names: [rpc-nfs_acl, rpc-status]
+    port: 2049
+    key: [nfs]
+  - service-names: [rpc, rstatd]
+    key: [rpc]
+  - service-names: [rpc, rusersd]
+    key: [rpc]
+
+# ── Microsoft Services ────────────────────────────────────────────────────────
+  - service-names: [ms-wbt-server, msrdp]
+    port: 3389
+    key: [msrdp]
+  - service-names: [dsc, msrdp]
+    port: 3390
+    key: [msrdp]
+  - service-names: [ms-sql-s, mssql, sybase]
+    key: [mssql]
+  - service-names: [ms-sql-s, mssql]
+    key: [mssql]
+  - service-names: [ms-sql-s, sybase]
+    key: [sybase/ms-sql-s]
+
+# ── NFS ───────────────────────────────────────────────────────────────────────
+  - service-names: [nfs, rpc-nfs_acl]
+    port: 2049
+    key: [nfs]
+  - service-names: [nfs_acl, rpc-nfs_acl]
+    port: 2049
+    key: [nfs_acl]
+  - service-names: [nfs, rpc-nfs]
+    port: 2049
+    key: [nfs]
+  - service-names: [nfs, rpc-status]
+    port: 2049
+    key: [nfs]
+  - service-names: [rpc-nfs, rpc-status]
+    port: 2049
+    key: [nfs]
+  - service-names: [rpc-nfs, rpcbind]
+    port: 2049
+    key: [nfs]
+  - service-names: [nfs, nfs_acl, rpc-nfs_acl]
+    port: 2049
+    key: [nfs]
+  - service-names: [nfs, rpc]
+    port: 2049
+    key: [nfs]
+  - service-names: [nfs, rpc]
+    port: 2463
+    key: [nfs/rpc]
+
+# ── Printing ──────────────────────────────────────────────────────────────────
+  - service-names: [jetdirect, pdl-datastream]
+    port: 9100
+    key: [jetdirect]
+  - service-names: [lpd, printer]
+    port: 515
+    key: [lpd]
+  - service-names: [http, ipp]
+    port: 631
+    key: [ipp]
+
+# ── DHCP / Boot ──────────────────────────────────────────────────────────────
+  - service-names: [bootps, dhcps]
+    port: 67
+    key: [dhcps]
+  - service-names: [bootpc, dhcpc]
+    port: 68
+    key: [dhcpc]
+
+# ── Authentication ────────────────────────────────────────────────────────────
+  - service-names: [kerberos, kerberos-sec]
+    key: [kerberos]
+  - service-names: [kpasswd, kpasswd5]
+    key: [kpasswd]
+
+# ── Java ──────────────────────────────────────────────────────────────────────
+  - service-names: [java-rmi, rmi_remote_object]
+    key: [java-rmi]
+  - service-names: [java-rmi, rmi_registry]
+    key: [java-rmi]
+  - service-names: [java-rmi, rmi_registry, rmiregistry]
+    key: [java-rmi]
+  - service-names: [java-listener, java-object]
+    key: [java-object]
+  - service-names: [corba-iiop, giop]
+    port: 3528
+    key: [corba-iiop]
+
+# ── Citrix ────────────────────────────────────────────────────────────────────
+  - service-names: [citrix, citrix-ica]
+    key: [citrix]
+  - service-names: [citrix-ima, citrixima]
+    key: [citrix-ima]
+
+# ── Database ──────────────────────────────────────────────────────────────────
+  - service-names: [oracle-tns, oracle_tnslsnr]
+    key: [oracle-tns]
+  - service-names: [http, oracle-mts]
+    port: 2030
+    key: [oracle-mts]
+  - service-names: [http, ibm-db2]
+    port: 50000
+    key: [ibm-db2]
+  - service-names: [firebird, gds_db]
+    port: 3050
+    key: [firebird]
+  - service-names: [pgbouncer, postgresql]
+    port: 5432
+    key: [postgresql]
+  - service-names: [redis, redis_server]
+    key: [redis]
+
+# ── Miscellaneous ─────────────────────────────────────────────────────────────
+  - service-names: [activemq, apachemq]
+    key: [activemq]
+  - service-names: [apc-2161, apc-agent]
+    port: 2161
+    key: [apc-agent]
+  - service-names: [apc-2260, apcpbeserver]
+    port: 2260
+    key: [apcpbeserver]
+  - service-names: [apcpbeserver, powerchute]
+    port: 2160
+    key: [powerchute]
+  - service-names: [cap, win-rpc]
+    port: 1026
+    key: [win-rpc]
+  - service-names: [dameware, damewaremr]
+    port: 6129
+    key: [dameware]
+  - service-names: [ike, isakmp]
+    port: 500
+    key: [ike]
+  - service-names: [ipsec-nat-t, nat-t-ike]
+    port: 4500
+    key: [ipsec-nat-t]
+  - service-names: [http, nagios-nsca]
+    key: [nagios-nsca]
+  - service-names: [cmrcservice, sccm_rcinfo]
+    port: 2701
+    key: [cmrcservice]
+  - service-names: [ndmp, ndmps, netapp_ndmp]
+    key: [ndmp]
+  - service-names: [ndmp, ndmps]
+    key: [ndmp]
+  - service-names: [ndmp, netapp_ndmp]
+    key: [ndmp]
+  - service-names: [netapp_ndmp, snet-sensor-mgmt]
+    port: 10000
+    key: [netapp_ndmp]
+  - service-names: [net-assistant, netassistant]
+    key: [netassistant]
+  - service-names: [remoting, remoting_tcp]
+    key: [remoting_tcp]
+  - service-names: [rsync, rsyncd]
+    port: 873
+    key: [rsync]
+  - service-names: [cvmmon, uc4, uc4_executor]
+    key: [uc4]
+  - service-names: [uc4, uc4_executor]
+    key: [uc4]
+  - service-names: [vmware-auth, vmware_auth]
+    key: [vmware-auth]
+  - service-names: [iss-realsecure, vmware_auth]
+    port: 902
+    key: [vmware-auth]
+  - service-names: [apex-mesh, vmware_auth]
+    port: 912
+    key: [vmware-auth]
+  - service-names: [nsrexec, rpc-390113]
+    port: 7937
+    key: [nsrexec]
+  - service-names: [nsrexec, rpc-390113, rpcbind]
+    port: 7937
+    key: [nsrexec]
+  - service-names: [av-emb-config, jboss-remoting]
+    port: 2050
+    key: [jboss-remoting]
+  - service-names: [cim_listener, wbem]
+    port: 5989
+    key: [wbem]
+  - service-names: [codemeter, codemeter_network_server]
+    key: [codemeter]
+  - service-names: [codesys_plc_runtime_proto, scol]
+    port: 1200
+    key: [codesys_plc_runtime_proto]
+  - service-names: [commvault_evmgrc, galaxy]
+    port: 8402
+    key: [commvault_evmgrc]
+  - service-names: [globalcatldapssl, ldap]
+    port: 3269
+    key: [ldaps]
+  - service-names: [iscsi, iscsi-target]
+    port: 3260
+    key: [iscsi]
+  - service-names: [ldap, ldapssl]
+    port: 636
+    key: [ldaps]
+  - service-names: [msexchange-logcopier, remoting]
+    key: [msexchange-logcopier]
+  - service-names: [opcua-tcp, opcua_tcp]
+    port: 4840
+    key: [opcua-tcp]
+  # NOTE: "Simatic S7" has uppercase + space; must match the exact string
+  # produced by the Nessus parser. Simatic S7 runs over ISO-TSAP on port 102.
+  - service-names: [Simatic S7, iso-tsap]
+    port: 102
+    key: [Simatic S7]
+  - service-names: [x11, "x11:1"]
+    port: 6001
+    key: [x11]
+  - service-names: [flexlm, flexnet_publisher]
+    key: [flexlm]
+  - service-names: [flexlm, flexnet_publisher_vendor_daemon]
+    key: [flexlm]
+  - service-names: [flexlm, lmgrd]
+    key: [flexlm]
+  - service-names: [jabber, xmpp-client]
+    key: [xmpp-client]
+  - service-names: [ejabberd, jabber]
+    key: [xmpp-client]
+  - service-names: [jabber, jabber_s2s]
+    port: 5269
+    key: [xmpp-server]
+  - service-names: [sip, sip-proxy]
+    key: [sip]
+  - service-names: [sip, vtsas]
+    ports: [5060, 5070]
+    key: [sip]
+  - service-names: [subversion, svnserve]
+    port: 3690
+    key: [subversion]

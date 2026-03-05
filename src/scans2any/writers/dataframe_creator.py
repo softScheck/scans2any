@@ -1,6 +1,13 @@
 """Convert infrastructure objects to pandas DataFrames for unified writer processing."""
 
-import pandas as pd
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Only imported for type hints; runtime import is deferred inside each
+    # function to avoid loading pandas/numpy at startup (saves ~350 ms).
+    import pandas as pd
 
 from scans2any.internal import Infrastructure, printer
 
@@ -45,6 +52,9 @@ def _create_multi_tables(
     """
     Create one pandas DataFrame per host.
     """
+    # Deferred import: keeps pandas/numpy out of the startup critical path.
+    import pandas as pd
+
     dataframes = []
 
     # Define which columns belong in the header and which in the row data
@@ -59,10 +69,21 @@ def _create_multi_tables(
         ports = []
         services = []
         banners = []
+        custom_row_values = {
+            col: [] for col in columns if col not in header_keys and col not in row_keys
+        }
+
         for service in host.services:
             banners.append(service.banners[0] if service.banners else "")
             services.append(service.service_names[0] if service.service_names else "")
             ports.append(f"{service.port}/{service.protocol}")
+            for col in custom_row_values:
+                if col in service.custom_fields:
+                    custom_row_values[col].append(
+                        merge_symbol.join(str(v) for v in service.custom_fields[col])
+                    )
+                else:
+                    custom_row_values[col].append("")
 
         header_values = []
         row_values: dict[str, list | str] = {}
@@ -81,6 +102,13 @@ def _create_multi_tables(
                     row_values[col] = services
                 elif col == "Banners":
                     row_values[col] = banners
+            else:
+                if col in host.custom_fields:
+                    header_values.append(
+                        merge_symbol.join(str(v) for v in host.custom_fields[col])
+                    )
+                else:
+                    row_values[col] = custom_row_values[col]
 
         # if only header_values, show only first line
         rows_len = 0 if not row_values else len(ports)
@@ -105,6 +133,9 @@ def _create_single_table(
     """
     Create a single pandas DataFrame for all hosts.
     """
+    # Deferred import: keeps pandas/numpy out of the startup critical path.
+    import pandas as pd
+
     rows = []
 
     for host in infra.hosts:
@@ -112,13 +143,31 @@ def _create_single_table(
         hostnames = merge_symbol.join(h for h in host.hostnames if h)
         os_info = str(next(iter(host.os))) if host.os else ""
 
-        ports = merge_symbol.join(f"{s.port}/{s.protocol}" for s in host.services)
-        services = merge_symbol.join(
-            " ".join(list(s.service_names)) for s in host.services
-        )
-        banners = merge_symbol.join(
-            s.banners[0] if s.banners else "" for s in host.services
-        )
+        ports_list = []
+        services_list = []
+        banners_list = []
+        custom_fields_list = {
+            col: []
+            for col in columns
+            if col
+            not in ("IP-Addresses", "Hostnames", "OS", "Ports", "Services", "Banners")
+        }
+
+        for s in host.services:
+            ports_list.append(f"{s.port}/{s.protocol}")
+            services_list.append(" ".join(s.service_names))
+            banners_list.append(s.banners[0] if s.banners else "")
+            for col in custom_fields_list:
+                if col in s.custom_fields:
+                    custom_fields_list[col].append(
+                        merge_symbol.join(str(v) for v in s.custom_fields[col])
+                    )
+                else:
+                    custom_fields_list[col].append("")
+
+        ports = merge_symbol.join(ports_list)
+        services = merge_symbol.join(services_list)
+        banners = merge_symbol.join(banners_list)
 
         row = {}
         for col in columns:
@@ -134,6 +183,13 @@ def _create_single_table(
                 row[col] = services
             elif col == "Banners":
                 row[col] = banners
+            else:
+                if col in host.custom_fields:
+                    row[col] = merge_symbol.join(
+                        str(v) for v in host.custom_fields[col]
+                    )
+                else:
+                    row[col] = merge_symbol.join(custom_fields_list[col])
 
         rows.append(row)
 
@@ -153,6 +209,8 @@ def create_flat_dataframe(
     Create a flattened DataFrame with one row per service.
     Useful for CSV and other row-based formats.
     """
+    # Deferred import: keeps pandas/numpy out of the startup critical path.
+    import pandas as pd
 
     rows = []
 
@@ -161,35 +219,44 @@ def create_flat_dataframe(
         hostnames = merge_symbol.join(h for h in host.hostnames if h)
         os_info = str(next(iter(host.os))) if host.os else ""
 
+        host_row_base = {}
+        for col in columns:
+            if col == "IP-Addresses":
+                host_row_base[col] = address
+            elif col == "Hostnames":
+                host_row_base[col] = hostnames
+            elif col == "OS":
+                host_row_base[col] = os_info
+            elif (
+                col not in ("Ports", "Services", "Banners")
+                and col in host.custom_fields
+            ):
+                host_row_base[col] = merge_symbol.join(
+                    str(v) for v in host.custom_fields[col]
+                )
+
         if host.services:
             for service in host.services:
                 row = {}
                 for col in columns:
-                    if col == "IP-Addresses":
-                        row[col] = address
-                    elif col == "Hostnames":
-                        row[col] = hostnames
-                    elif col == "OS":
-                        row[col] = os_info
+                    if col in host_row_base:
+                        row[col] = host_row_base[col]
                     elif col == "Ports":
                         row[col] = f"{service.port}/{service.protocol}"
                     elif col == "Services":
                         row[col] = merge_symbol.join(service.service_names)
                     elif col == "Banners":
                         row[col] = merge_symbol.join(service.banners)
+                    else:
+                        row[col] = merge_symbol.join(
+                            str(v) for v in service.custom_fields.get(col, [])
+                        )
                 rows.append(row)
         else:
             # Host with no services
             row = {}
             for col in columns:
-                if col == "IP-Addresses":
-                    row[col] = address
-                elif col == "Hostnames":
-                    row[col] = hostnames
-                elif col == "OS":
-                    row[col] = os_info
-                elif col in {"Ports", "Services", "Banners"}:
-                    row[col] = ""
+                row[col] = host_row_base.get(col, "")
             rows.append(row)
 
     df = pd.DataFrame(rows)
@@ -212,30 +279,52 @@ def create_data_unmerged(
         ip_infos: dict[str, list | dict] = {}
         host_dict[ip] = ip_infos
 
+        processed_services = False
         for col in columns:
             if col == "IP-Addresses" and len(host.address) > 1:
                 ip_infos[col.lower()] = list(host.address)
-            if col == "Hostnames":
+            elif col == "Hostnames":
                 ip_infos[col.lower()] = list(host.hostnames)
-            if col == "OS":
+            elif col == "OS":
                 ip_infos[col.lower()] = list(host.os)
-            if col == "Ports" or col == "Services" or col == "Banners":
+            elif col in ("Ports", "Services", "Banners") and not processed_services:
+                processed_services = True
                 tcp_ports = {}
                 udp_ports = {}
+
+                # Pre-calculate which columns to extract for services
+                service_cols = []
+                for c in columns:
+                    if c == "Services":
+                        service_cols.append(("service_names", "service_names"))
+                    elif c == "Banners":
+                        service_cols.append(("banners", c.lower()))
+                    elif c not in ("IP-Addresses", "Hostnames", "OS", "Ports"):
+                        service_cols.append((c, c))
+
                 for service in host.services:
                     service_row = {}
-                    for col in columns:
-                        if col == "Services":
-                            service_row["service_names"] = list(service.service_names)
-                        elif col == "Banners":
-                            service_row[col.lower()] = list(service.banners)
+                    for attr_name, dict_key in service_cols:
+                        if attr_name == "service_names":
+                            service_row[dict_key] = list(service.service_names)
+                        elif attr_name == "banners":
+                            service_row[dict_key] = list(service.banners)
+                        elif attr_name in service.custom_fields:
+                            service_row[dict_key] = list(
+                                service.custom_fields[attr_name]
+                            )
+
                     if service.protocol == "tcp":
                         tcp_ports[service.port] = service_row
                     elif service.protocol == "udp":
                         udp_ports[service.port] = service_row
-
                 ip_infos["tcp_ports"] = tcp_ports
                 ip_infos["udp_ports"] = udp_ports
+            elif (
+                col not in ("Ports", "Services", "Banners")
+                and col in host.custom_fields
+            ):
+                ip_infos[col] = list(host.custom_fields[col])
 
     return host_dict
 
@@ -245,5 +334,8 @@ def create_dataframe_unmerged(
     *,
     columns: tuple[str, ...],
 ) -> pd.DataFrame:
+    # Deferred import: keeps pandas/numpy out of the startup critical path.
+    import pandas as pd
+
     host_dict = create_data_unmerged(infra, columns=columns)
     return pd.DataFrame(host_dict)

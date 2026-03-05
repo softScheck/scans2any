@@ -4,13 +4,14 @@ Command-line interface handling for scans2any.
 
 import argparse
 import platform
+import sys
 from argparse import OPTIONAL, SUPPRESS, ZERO_OR_MORE, ArgumentDefaultsHelpFormatter
 from os import environ
-from sys import argv
 
 from scans2any.filters import avail_filters
 from scans2any.helpers.utils import validate_columns
 from scans2any.internal import printer
+from scans2any.internal.protocols import HasAddArguments
 from scans2any.parsers import avail_parsers
 from scans2any.writers import avail_writers
 
@@ -140,7 +141,7 @@ def arg_parser(version):
     class LogoArgumentParser(argparse.ArgumentParser):
         def parse_args(self, args=None, namespace=None):
             # If no arguments are provided, show info and usage.
-            if len(argv) == 1:
+            if len(sys.argv) == 1:
                 show_info(version)
                 print(self.format_usage())  # noqa: T201
                 self.exit(0)
@@ -188,7 +189,7 @@ def _add_basic_arguments(parser):
         default="BUFFER_FILE.json",
     )
     parser.add_argument(
-        "-o", "--out", metavar="filename", help="output to specified file"
+        "-o", "--out", metavar="filename", help="Output to specified file"
     )
     parser.add_argument(
         "--ignore-conflicts",
@@ -205,7 +206,7 @@ def _add_basic_arguments(parser):
 
 
 def _add_scan_arguments(parser):
-    scan_group = parser.add_argument_group("input files (at least one required unless)")
+    scan_group = parser.add_argument_group("input files (at least one required)")
 
     for name in avail_parsers:
         if hasattr(avail_parsers[name], "add_arguments"):
@@ -232,7 +233,7 @@ def _add_writer_arguments(parser):
         "--columns",
         type=lambda s: validate_columns(tuple(s.split(","))),
         default=("IP-Addresses", "Hostnames", "Ports", "Services", "Banners", "OS"),
-        help="Specify output columns as a comma-separated list.",
+        help="Specify output columns as a comma-separated list. (default: ('IP-Addresses', 'Hostnames', 'Ports', 'Services', 'Banners', 'OS'))",
     )
     writer_group.add_argument(
         "-W",
@@ -277,6 +278,7 @@ def _add_filter_arguments(parser):
         type=lambda s: filter_list(s.split(",")),
     )
     filter_group.add_argument(
+        "-F",
         "--enable-filters",
         default=[],
         help="Enables additional filters (applied after --filters)",
@@ -319,7 +321,7 @@ def parse_args_with_custom_options(
     # Add writer-specific arguments
     writer_args = parser.add_argument_group("writer arguments")
     for obj in avail_writers:
-        if hasattr(obj, "add_arguments") and known_args.writer == obj.NAME:
+        if isinstance(obj, HasAddArguments) and known_args.writer == obj.NAME:
             obj.add_arguments(writer_args)
 
     return parser, parser.parse_args(remaining, namespace=known_args)

@@ -1,22 +1,8 @@
 [project]
 name = "scans2any"
-version = "0.8.1"
+version = "1.0.0"
 description = "Convert infrastructure scans into various output formats such as Markdown tables, YAML, HTML, CSV, and more"
-license = "AGPL-3.0-or-later"
-authors = [
-    { name = "softScheck", email = "info@softscheck.com"},
-]
 readme = "README.md"
-keywords = ["security", "pentesting", "report", "infrastructure"]
-classifiers = [
-    "Environment :: Console",
-    "Framework :: Pytest",
-    "Operating System :: OS Independent",
-    "Programming Language :: Python",
-    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
-    "Topic :: Security",
-    "Topic :: Text Processing",
-]
 requires-python = ">=3.12"
 packages = [
     { include = "scans2any", from = "src" },
@@ -29,37 +15,33 @@ dependencies = [
     "sortedcontainers>=2.4.0",
     "defusedxml>=0.7.1",
     "partial-json-parser>=0.2.1.1.post4",
-    "tqdm",
+    "rich>=13.0.0",
     "openpyxl>=3.1.5",
     "jinja2>=3.1.5",
     "wcwidth>=0.2.13",
+    "pydantic>=2.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "ty>=0.0.1a21",
+    "pandas-stubs>=2.2.3.241009",
+    "pytest>=8.3.3",
+    "types-pyyaml>=6.0.12.20240917",
+	"dunamai>1.0",
+    "syrupy>=4.0.0",
 ]
 
 [project.scripts]
 scans2any = "scans2any.main:main"
 
-[project.urls]
-Homepage = "https://www.softscheck.com"
-Repository = "https://github.com/softScheck/scans2any"
-
 [tool.uv]
-dev-dependencies = [
-    "mypy>=1.12.0",
-    "pandas-stubs>=2.2.3.241009",
-    "pytest>=8.3.3",
-    "types-pyyaml>=6.0.12.20240917",
-    "types-tqdm>=4.67.0.20241221",
-	"dunamai>1.0",
-	"tomli>1.0"
-]
-
-[tool.mypy]
-mypy_path = [
-    "src",
-]
+native-tls = true
+publish-url = "https://pypi.softscheck.local"
 
 [build-system]
 requires = [
     "hatchling",
 ]
 build-backend = "hatchling.build"
+

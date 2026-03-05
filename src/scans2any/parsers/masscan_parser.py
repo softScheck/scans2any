@@ -3,6 +3,7 @@ Masscan Parser
 Parses `JSON` output of masscan.
 """
 
+from pathlib import Path
 from typing import TypedDict
 
 from scans2any.helpers.utils import read_json
@@ -27,13 +28,13 @@ def add_arguments(parser):
     )
 
 
-def parse(filename: str) -> Infrastructure:
+def parse(filename: str | Path) -> Infrastructure:
     """
     Parses a Masscan JSON report and returns an Infrastructure object.
 
     Parameters
     ----------
-    filename : str
+    filename : str | Path
         Path to the Masscan JSON report file.
 
     Returns
@@ -49,7 +50,7 @@ def parse(filename: str) -> Infrastructure:
     return infra
 
 
-def __parse_json(filename: str) -> list[Host]:
+def __parse_json(filename: str | Path) -> list[Host]:
     """
     Parses the JSON output of a Masscan report.
 
@@ -79,14 +80,17 @@ def __parse_json(filename: str) -> list[Host]:
     for obj in scan_data:
         try:
             new_host = Host(address=set([obj["ip"]]), hostnames=set(), os=set())
-            service = obj["ports"][0]
-            new_service = Service(
-                port=service["port"],
-                protocol=service["proto"],
-                service_names=SortedSet(),
-                banners=SortedSet(),
-            )
-            new_host.add_service(new_service)
+            new_services = []
+            for service in obj["ports"]:
+                new_services.append(
+                    Service(
+                        port=service["port"],
+                        protocol=service["proto"],
+                        service_names=SortedSet(),
+                        banners=SortedSet(),
+                    )
+                )
+            new_host.add_services(new_services)
             hosts.append(new_host)
         except (KeyError, IndexError):
             continue  # Skip incomplete objects from partial parsing

@@ -1,5 +1,7 @@
+"""Normalize and filter nmap service banners to reduce information overload."""
+
 import re
-from typing import Any, TypedDict
+from typing import Any
 
 from scans2any.internal import Service, SortedSet
 
@@ -38,11 +40,6 @@ def apply_filter(service: Service, args: Any) -> None:
 def _is_nmap_banner(banner: str) -> bool:
     """Check if banner is an nmap banner by looking for characteristic keys."""
     return any(f"{key}: " in banner for key in POSSIBLE_KEYS)
-
-
-class IndexedKey(TypedDict):
-    key: str
-    idx: int
 
 
 def _make_dict_from_nmap_banner(banner: str) -> dict[str, str]:

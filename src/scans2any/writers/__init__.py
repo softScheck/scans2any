@@ -5,7 +5,8 @@ Writers for different output formats.
 import re
 from importlib import import_module
 from pathlib import Path
-from typing import Any
+
+from scans2any.internal.protocols import WriterProtocol
 
 module_files = (
     mod_file
@@ -13,7 +14,7 @@ module_files = (
     if mod_file.is_file()
 )
 
-avail_writers: list[Any] = []
+avail_writers: list[WriterProtocol] = []
 
 for mod_file in module_files:
     mod_name = mod_file.stem
@@ -21,7 +22,7 @@ for mod_file in module_files:
         pkg_name = f"{__package__}.{mod_name}"
         try:
             mod = import_module(pkg_name)
-            avail_writers.append(mod)
+            avail_writers.append(mod)  # type: ignore[arg-type]
         except ImportError as e:
             print(f"Failed to import {pkg_name}: {e}")  # noqa: T201
 

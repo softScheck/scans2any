@@ -1,3 +1,5 @@
+"""Remove uninformative or placeholder service names from services."""
+
 from scans2any.internal import Service, SortedSet
 
 PRIORITY = 2

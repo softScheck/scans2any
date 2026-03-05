@@ -1,17 +1,161 @@
+"""Infrastructure data model representing a collection of scanned hosts."""
+
 import ipaddress
 import os
 import tempfile
 import textwrap
+from pathlib import Path
 from typing import Self
 
 import yaml
+from pydantic import BaseModel, ConfigDict, Field
 
 from scans2any.internal import Host, printer
+from scans2any.internal.clustering import cluster_hosts
 from scans2any.internal.host import HostIntegrationError
 from scans2any.internal.sorted_set import SortedSet
 
+try:
+    from yaml import CSafeDumper as SafeDumper
+    from yaml import CSafeLoader as SafeLoader
+except ImportError:
+    from yaml import SafeDumper, SafeLoader
 
-class Infrastructure:
+
+# --- Performance helpers for merge file generation ---
+def _represent_sortedset(dumper, data):  # pragma: no cover - simple adapter
+    return dumper.represent_list(list(data))
+
+
+if SortedSet not in SafeDumper.yaml_representers:
+    yaml.add_representer(SortedSet, _represent_sortedset, Dumper=SafeDumper)
+
+_MERGEFILE_HEADER = "# scans2any: merge file\n\n"
+_AUTOMERGE_SECTION_HEADER = (
+    "# Automatic merging rules.\n"
+    "#\n"
+    "# if any of the listed combinations of service names [and port] (e.g. `http` and\n"
+    "# `www`) are found as service names for the same port, the key is used as the\n"
+    "# conflict solving service name.\n"
+)
+_AUTOMERGE_TEMPLATE = (
+    "auto-merge:\n"
+    "#-   service-names:\n"
+    "#    - http\n"
+    "#    - https\n"
+    "#    port: 443\n"
+    "#    key:\n"
+    "#    - https\n"
+    "#-   service-names:\n"
+    "#    - http\n"
+    "#    - https\n"
+    "#    port: 80\n"
+    "#    key:\n"
+    "#    - http\n"
+)
+_MANUAL_SECTION_HEADER = (
+    "\n# Manual merging rules.\n"
+    "#\n# Make sure there is only one service name and banner for each port left\n"
+    "# then execute scans2any again with option `--merge-file filename`\n"
+)
+_CUSTOM_SECTION_TEMPLATE = (
+    "\n# Custom entries\n"
+    "#\n"
+    "# Add custom entries in this way:\n"
+    "custom-entries:\n"
+    "#    1.1.1.1:\n"
+    "#        hostnames:\n"
+    "#           -   test.company.com\n"
+    "#           -   test2.company.com\n"
+    "#        os: linux\n"
+    "#        ports:\n"
+    "#           -   port: 1111/tcp\n"
+    "#               service-name: test\n"
+    "#               banner: Test description\n"
+    "#           -   port: 2222/udp\n"
+    "#               service-name: test2\n"
+    "#               banner: Test description 2\n"
+    "#    2.2.2.2:\n"
+    "#        hostnames:\n"
+    "#           -   asdf.company.local\n"
+    "#        os: bsd\n"
+    "#        ports:\n"
+    "#           -   port: 333/tcp\n"
+    "#               service-name: test\n"
+    "#               banner: Test description 3"
+)
+
+
+def _validate_and_split_rules(
+    ruleset: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    """Validate auto-merge rules and split into OS rules and service/banner rules.
+
+    Returns two lists: (os_rules, service_rules).  Each entry is a normalised
+    dict ready for fast matching inside ``auto_merge``.
+    """
+    os_rules: list[dict] = []
+    service_rules: list[dict] = []
+
+    for rule in ruleset:
+        if "key" not in rule:
+            printer.failure(f"Malformed rule in ruleset: {rule}")
+            printer.failure("'key' is required in each rule. Skipping...")
+            continue
+
+        has_os = "os" in rule
+        has_svc = "service-names" in rule
+        has_ban = "banners" in rule
+
+        if not (has_os or has_svc or has_ban):
+            printer.failure(f"Malformed rule in ruleset: {rule}")
+            printer.failure(
+                "At least one of 'service-names', 'os', or 'banners' is needed. Skipping..."
+            )
+            continue
+
+        key = rule["key"]
+
+        # Pure OS rule  →  os_rules list
+        if has_os and not has_svc and not has_ban:
+            os_set = frozenset(rule["os"])
+            if not os_set:
+                printer.failure(
+                    f"Malformed rule: empty 'os' list in {rule}. Skipping..."
+                )
+                continue
+            os_rules.append({"key": key, "os": os_set, "cnt": 0})
+            continue
+
+        # Service-name and/or banner rule  →  service_rules list
+        svc_names: frozenset[str] | None = None
+        if has_svc:
+            svc_names = frozenset(rule["service-names"])
+            if not svc_names:
+                printer.failure(
+                    f"Malformed rule: empty 'service-names' list in {rule}. Skipping..."
+                )
+                continue
+
+        banners: tuple[str, ...] | None = None
+        if has_ban:
+            banners = tuple(sorted(set(rule["banners"])))
+
+        service_rules.append(
+            {
+                "key": key,
+                "service_names": svc_names,
+                "port": rule.get("port"),
+                "ports": frozenset(rule["ports"]) if "ports" in rule else None,
+                "banners": banners,
+                "cnt": 0,
+            }
+        )
+
+    return os_rules, service_rules
+
+
+class Infrastructure(BaseModel):
     """
     Internal representation of parsed infrastructure scans.
 
@@ -25,10 +169,19 @@ class Infrastructure:
         Additional information, like `Nmap scan infrastructure`
     """
 
-    def __init__(self, hosts: list[Host] | None = None, identifier: str = ""):
-        self.hosts: list[Host] = []
-        self.identifier: str = identifier
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    hosts: list[Host] = Field(default_factory=list)
+    identifier: str = ""
+    trusted_fields: dict[str, list[str]] = Field(default_factory=dict)
+
+    def __init__(
+        self,
+        hosts: list[Host] | None = None,
+        identifier: str = "",
+        trusted_fields: dict[str, list[str]] | None = None,
+    ):
+        super().__init__(identifier=identifier, trusted_fields=trusted_fields or {})
         if hosts is not None:
             self.add_hosts(hosts)
 
@@ -37,6 +190,8 @@ class Infrastructure:
         Adds a new host to the infrastructure OR integrates it to an existing
         host with the same ip address or at most one ip address and matching
         hostnames.
+
+        Propagates trusted_fields from Infrastructure to the host and its services.
 
         Optionally, we can use this infrastructure as priority, to avoid
         collisions, i. e. multiple service names and/or banners.
@@ -56,8 +211,20 @@ class Infrastructure:
             printer.warning(f"Skipped attempt to add host of type {type(new_host)}")
             return
 
+        # Propagate trusted_fields from Infrastructure to Host
+        if "host" in self.trusted_fields:
+            for field in self.trusted_fields["host"]:
+                new_host.trusted_fields.add(field)
+
+        # Propagate trusted_fields to all services
+        if "service" in self.trusted_fields:
+            for service in new_host.services:
+                for field in self.trusted_fields["service"]:
+                    service.trusted_fields.add(field)
+
+        # Fast O(n) linear scan for single-host additions (avoids cluster_hosts
+        # overhead of list copy + union-find + dict setup on every call).
         for host in self.hosts:
-            # Same IP address or common hostname
             if (host.address & new_host.address) or (
                 host.hostnames & new_host.hostnames
             ):
@@ -71,27 +238,71 @@ class Infrastructure:
                     printer.warning(str(e))
                     printer.warning(f"self: {host.address!s}, {host.hostnames!s}")
                     printer.warning(
-                        f"other: {new_host.address!s}, " + f"{new_host.hostnames!s}"
+                        f"other: {new_host.address!s}, {new_host.hostnames!s}"
                     )
 
-        # No integration, just append the new host
         self.hosts.append(new_host)
 
     def add_hosts(self, new_hosts: list[Host], *, prioritize_self: bool = False):
         """
-        Add new hosts to the infrastructure. Calls `self.add_host()` on every
-        item in the list.
+        Add new hosts to the infrastructure using cluster-based merging.
+
+        Hosts sharing IP addresses or hostnames (transitively) are grouped into
+        clusters.  Existing hosts (self) are preferred as the merge base so
+        that their data takes priority when ``prioritize_self`` is set.
 
         Parameters
         ----------
         new_hosts: list[Host]
             List of hosts to be added
         prioritize_self: bool
-            Passed to calls of `self.add_host()`
+            Use `merge_with_host` (priority) instead of `union_with_host`.
         """
+        if not new_hosts:
+            return
 
-        for new_host in new_hosts:
-            self.add_host(new_host, prioritize_self=prioritize_self)
+        # Propagate trusted_fields from Infrastructure to new hosts
+        if "host" in self.trusted_fields:
+            for new_host in new_hosts:
+                for field in self.trusted_fields["host"]:
+                    new_host.trusted_fields.add(field)
+
+        if "service" in self.trusted_fields:
+            for new_host in new_hosts:
+                for service in new_host.services:
+                    for field in self.trusted_fields["service"]:
+                        service.trusted_fields.add(field)
+
+        # Build combined host list
+        all_hosts = self.hosts + new_hosts
+        self_host_ids = {id(h) for h in self.hosts}
+
+        clusters = cluster_hosts(all_hosts)
+        merged: list[Host] = []
+
+        for cluster in clusters:
+            # Existing (priority) hosts first, then new hosts
+            prio = [h for h in cluster if id(h) in self_host_ids]
+            rest = [h for h in cluster if id(h) not in self_host_ids]
+            ordered = prio + rest
+
+            base_host = ordered[0]
+            for h in ordered[1:]:
+                try:
+                    if prioritize_self:
+                        base_host.merge_with_host(h)
+                    else:
+                        base_host.union_with_host(h)
+                except HostIntegrationError as e:
+                    printer.warning(str(e))
+                    printer.warning(
+                        f"self: {base_host.address!s}, {base_host.hostnames!s}"
+                    )
+                    printer.warning(f"other: {h.address!s}, {h.hostnames!s}")
+                    merged.append(h)
+            merged.append(base_host)
+
+        self.hosts = merged
 
     def remove_host(self, hostip: str):
         """
@@ -131,58 +342,60 @@ class Infrastructure:
 
         return None
 
-    def union_with_infrastructure(self, other: Self):
-        """
-        Infrastructures are combined, i.e. contained hosts with
-
-        1. the same ip address or
-        2. the same list of hostnames
-
-        are combined.
-
-        Parameters
-        ----------
-        other : Self
-            Infrastructure to be combined with this one.
-        """
-
-        self.add_hosts(other.hosts)
-
     def merge_with_infrastructure(self, other: Self, ruleset: list[dict] | None = None):
-        """
-        Infrastructures are merged, using this infrastructure (self) as priority
-        to solve merge conflicts.
+        """High-performance prioritized merge of another infrastructure into self.
 
-        Primarily intended to resolve conflicts using the infrastructure created
-        from a merge file as priority (self).
+        Priority semantics (unchanged logically from legacy implementation):
+        - Existing hosts (self) win on conflicting service names & banners.
+        - Existing host OS kept if non-empty; otherwise adopt from other.
+        - Addresses/hostnames are always unioned.
 
-        An option ruleset can be passed, to automatically resolve reoccurring
-        conflicts. E.g. "for port `443` and service names `http` or `https`,
-        always choose `https`". See `config.yaml` or automatically created merge
-        file for examples on how to define rules.
-
-        Parameters
-        ----------
-        other : Self
-            Infrastructure to be merged into this one.
-        ruleset: list[dict]
-            List of merging rules as in `config.yaml` to be applied.
+        This optimized version avoids O(n^2) host-by-host matching by building
+        connected components (Union-Find) across self.hosts + other.hosts using
+        shared IPs or hostnames, then performing one merge per component.
         """
 
-        # Currently, merge file holds
-        #
-        #   1. service name prios
-        #   2. banner prios
-        #
-        # In the future, hostname to ip associations might be part of it too
-        #
-        self.add_hosts(other.hosts, prioritize_self=True)
+        if self is not other and other.hosts:
+            if not self.hosts:
+                # Quick path: if self empty just clone other's hosts
+                self.hosts = list(other.hosts)
+            else:
+                # Build combined host list
+                all_hosts = self.hosts + other.hosts
+                self_host_ids = {id(h) for h in self.hosts}
 
-        # Apply rules from ruleset
+                clusters = cluster_hosts(all_hosts)
+                merged: list[Host] = []
+
+                for cluster in clusters:
+                    prio = [h for h in cluster if id(h) in self_host_ids]
+                    rest = [h for h in cluster if id(h) not in self_host_ids]
+
+                    if prio:
+                        base_host = prio[0]
+                        for h in prio[1:] + rest:
+                            base_host.merge_with_host(h)
+                    else:
+                        base_host = rest[0]
+                        for h in rest[1:]:
+                            base_host.union_with_host(h)
+
+                    base_host.sort()
+                    merged.append(base_host)
+
+                self.hosts = merged
+
+        # Apply rules post-merge
         if ruleset is not None:
             self.auto_merge(ruleset)
 
-    def auto_merge(self, ruleset: list[dict] | None = None):
+    def auto_merge(
+        self,
+        ruleset: list[dict] | None = None,
+        *,
+        quiet: bool = False,
+        verbose: bool = False,
+    ):
         """
         Automatic conflict solving using internal ruleset from config.
 
@@ -190,91 +403,92 @@ class Infrastructure:
         from the config.
 
         ruleset: list[dict]
-            List of merging rules as in `config.yaml` to be applied.
+            List of merging rules as in `merge-rules.yaml` to be applied.
+        quiet: bool
+            If True, suppress status spinner output.
+        verbose: bool
+            If True, keep status visible after completion.
         """
-        printer.section("Automatic Merging")
+        with printer.status_section("Automatic Merging", quiet=quiet, verbose=verbose):
+            if ruleset is None:
+                config_path = Path(__file__).parent / "merge-rules.yaml"
+                with open(config_path) as file:
+                    config = yaml.load(file, Loader=SafeLoader)
+                    ruleset = config.get("auto-merge", [])
 
-        if ruleset is None:
-            printer.status("Solving conflicts based on internal ruleset.")
-            config_path = os.path.join(os.path.dirname(__file__), "config.yaml")
+            os_rules, service_rules = _validate_and_split_rules(ruleset)
 
-            with open(config_path) as file:
-                config = yaml.safe_load(file)
-                ruleset = config.get("auto-merge", [])
-        else:
-            printer.status("Solving conflicts based on provided ruleset.")
-
-        # Counters for success message
-        cnt_service = 0
-        cnt_banner = 0
-        cnt_os = 0
-
-        for rule in ruleset:
-            # Validate the rule
-            if "key" not in rule:
-                printer.failure(f"Malformed rule in ruleset: {rule}")
-                printer.failure("'key' is required in each rule. Skipping...")
-                continue
-
-            if not any(k in rule for k in ("service-names", "os", "banners")):
-                printer.failure(f"Malformed rule in ruleset: {rule}")
-                printer.failure(
-                    "At least one of 'service-names', 'os', or 'banners' is needed. Skipping..."
-                )
-                continue
-
-            rule_key = rule["key"]
-            rule_os = set(rule.get("os", []))
-            rule_ports = set(rule.get("ports", []))
-            rule_port = rule.get("port")
-            rule_service_names = set(rule.get("service-names", []))
-            rule_banners: SortedSet[str] = SortedSet(rule.get("banners", []))
+            cnt_os = 0
+            cnt_service = 0
+            cnt_banner = 0
 
             for host in self.hosts:
-                # Apply 'os' rule if applicable
-                if "os" in rule and set(host.os) == rule_os:
-                    host.os = rule_key
-                    cnt_os += 1
+                # --- OS rules (only checked per host, not per service) ---
+                if os_rules and host.os:
+                    host_os_set = frozenset(host.os)
+                    for rule in os_rules:
+                        if host_os_set == rule["os"]:
+                            host.os = SortedSet(rule["key"])
+                            host_os_set = frozenset(host.os)
+                            cnt_os += 1
+                            rule["cnt"] += 1
 
-                # Apply 'service-names' and 'port(s)' rules if applicable
-                elif "service-names" in rule:
-                    for service in host.services:
-                        if rule_port is not None and service.port != rule_port:
-                            continue
-                        if rule_ports and service.port not in rule_ports:
-                            continue
+                # --- Service / banner rules ---
+                if not service_rules:
+                    continue
+
+                for service in host.services:
+                    svc_names = frozenset(service.service_names)
+                    svc_banners = tuple(sorted(service.banners))
+
+                    for rule in service_rules:
+                        # Service-name matching (port constraints apply to
+                        # both service-name and banner checks for this rule)
+                        if rule["service_names"] is not None:
+                            port = rule["port"]
+                            if port is not None and service.port != port:
+                                continue
+                            ports = rule["ports"]
+                            if ports is not None and service.port not in ports:
+                                continue
+                            if svc_names != rule["service_names"]:
+                                continue
+
+                            service.service_names = SortedSet(rule["key"])
+                            svc_names = frozenset(service.service_names)
+                            cnt_service += 1
+                            rule["cnt"] += 1
+
                         if (
-                            rule_service_names
-                            and set(service.service_names) != rule_service_names
+                            rule["banners"] is not None
+                            and svc_banners == rule["banners"]
                         ):
-                            continue
-                        service.service_names = rule_key
-                        cnt_service += 1
-
-                # Apply 'banners' rule if applicable
-                if "banners" in rule:
-                    for service in host.services:
-                        if SortedSet(service.banners) == rule_banners:
-                            service.banners = rule_key
+                            service.banners = SortedSet(rule["key"])
+                            svc_banners = tuple(sorted(service.banners))
                             cnt_banner += 1
+                            rule["cnt"] += 1
 
-        if cnt_os or cnt_service or cnt_banner:
-            printer.success(
-                f"Successfully applied {cnt_os} OS, {cnt_service} service, and {cnt_banner} banner merge rules."
-            )
-        else:
-            printer.warning("No merge rules were applied.")
+            all_rules = os_rules + service_rules
+            for rule in all_rules:
+                if rule["cnt"] > 0:
+                    printer.status(f"Applied rule '{rule['key']}' {rule['cnt']} times.")
+
+            if cnt_os or cnt_service or cnt_banner:
+                printer.success(
+                    f"Successfully applied {cnt_os} OS, {cnt_service} service, and {cnt_banner} banner merge rules."
+                )
+            else:
+                printer.info("No merge rules were applied.")
 
     def make_merge_file(
         self, *, passed_merge_file: bool, buffer_file: str = "BUFFER_FILE.json"
     ):
         """
-        Create merge file if necessary.
+        Create merge file if necessary (optimized).
 
-        Checks for multiple service names or banners for the same port.
-
-        If so, create a merge file where these collisions can be resolved
-        manually.
+        Collects collisions in a single pass, writes a structured merge file
+        with large buffered chunks and avoids previously unused preserved vs
+        altered separation (kept externally for compatibility if needed).
 
         Parameters
         ----------
@@ -291,14 +505,12 @@ class Infrastructure:
         """
 
         file_name = "MERGE_FILE.yaml"
-        temp_merge_file = os.path.join(tempfile.gettempdir(), file_name)
+        temp_merge_file = Path(tempfile.gettempdir()) / file_name
 
-        collisions = {}
-
-        for host in self.hosts:
-            host_collisions = host.get_collisions()
-            if host_collisions:
-                collisions[host.identifier()] = host_collisions
+        # Single-pass collision collection using walrus operator
+        collisions = {
+            h.identifier(): c for h in self.hosts if (c := h.get_collisions())
+        }
 
         if not collisions:
             return False
@@ -306,60 +518,35 @@ class Infrastructure:
         printer.warning("Conflicts found in infrastructure.")
 
         # Don't override merge file without explicit consent
-        if os.path.exists(file_name):
+        if Path(file_name).exists():
             # If the existing merge file was not passed, there are probably not
             # many solved conflicts in it and the user may either override it
             # completely or leave it as it is.
             if not passed_merge_file:
                 printer.warning(
                     f"Mergefile '{file_name}' already exists, "
-                    + " writing to temporary file {temp_merge_file} instead."
+                    + f" writing to temporary file {temp_merge_file} instead."
                 )
                 file_name = temp_merge_file
             else:
+                # Merge file was passed but still has conflicts - create a new one
+                # with remaining conflicts for the user to resolve
                 printer.warning(
-                    f"Mergefile '{file_name}' has remaining conflicts. Exiting."
+                    f"Mergefile '{file_name}' has remaining conflicts. "
+                    f"Creating updated merge file with unresolved conflicts."
                 )
-                exit(1)
+                printer.debug(f"Collisions: {collisions}")
+                # Don't exit - continue to write the updated merge file
 
-        target_dir = os.path.dirname(os.path.abspath(file_name)) or "."
+        target_dir = Path(file_name).resolve().parent or Path(".")
         if not os.access(target_dir, os.W_OK):
             printer.warning(
                 "No write access to current directory. Using temporary file."
             )
-            file_name = temp_merge_file
+            file_name = str(temp_merge_file)
 
-        auto_merge_rules = None
-        manual_merge_rules: dict[str, dict] = {
-            "preserved_rules": {},
-            "altered_rules": {},
-        }
-
-        for host_collision in collisions:
-            if host_collision in manual_merge_rules["preserved_rules"]:
-                # 'still' makes sense for rules, that have been preserved from
-                # the merge file
-                printer.status(f"{host_collision} still has collisions")
-                for key in collisions[host_collision]:
-                    manual_merge_rules["preserved_rules"][host_collision][key] = (
-                        collisions[host_collision][key]
-                    )
-                # Move to 'altered rules'
-                manual_merge_rules["altered_rules"][host_collision] = (
-                    manual_merge_rules["preserved_rules"][host_collision]
-                )
-                del manual_merge_rules["preserved_rules"][host_collision]
-            else:
-                manual_merge_rules["altered_rules"][host_collision] = collisions[
-                    host_collision
-                ]
-
-        self.__write_merge_file(
-            auto_merge_rules,
-            manual_merge_rules["altered_rules"],
-            manual_merge_rules["preserved_rules"],
-            file_name,
-        )
+        # Currently no auto merge rules computed here (placeholder None)
+        self.__write_merge_file(None, collisions, {}, file_name)
         printer.warning(
             "One or multiple unresolvable conflicts have been identified. "
             f"A Mergefile has been written to '{file_name}' and a "
@@ -431,106 +618,53 @@ class Infrastructure:
             s += str(host)
         return s
 
+    def __str__(self) -> str:
+        return self.__repr__()
+
     def __write_merge_file(
         self,
         auto_merge_rules,
         manual_merge_altered_rules,
         manual_merge_preserved_rules,
-        file_name="MERGE_FILE.yaml",
+        file_name: str | Path = "MERGE_FILE.yaml",
     ):
-        """
-        Write collisions to merge file in `yaml` format
-        """
+        """Write collisions to merge file in `yaml` format (optimized)."""
 
-        def represent_sortedset(dumper, data):
-            return dumper.represent_list(list(data))
-
-        yaml.add_representer(SortedSet, represent_sortedset, Dumper=yaml.SafeDumper)
-
-        with open(file_name, "w") as merge_file:
-            merge_file.write("# scans2any: merge file\n\n\n")
-            # Automatic merge rules
-            merge_file.write(
-                "# Automatic merging rules.\n#\n"
-                + "# if any of the listed combinations of service names "
-                + "[and port] (e.g. `http` and\n"
-                + "# `www`) are found as service names for the same port, "
-                + "the key is used as the\n"
-                + "# conflict solving service name.\n"
-            )
-            if auto_merge_rules is not None:
-                yaml.safe_dump(
+        parts: list[str] = []
+        parts.append(_MERGEFILE_HEADER)
+        parts.append(_AUTOMERGE_SECTION_HEADER)
+        if auto_merge_rules is not None:
+            parts.append(
+                yaml.dump(
                     {"auto-merge": auto_merge_rules},
-                    merge_file,
+                    Dumper=SafeDumper,
                     indent=4,
                     sort_keys=False,
                 )
-            else:
-                merge_file.write(
-                    "auto-merge:\n"
-                    + "#-   service-names:\n"
-                    + "#    - http\n"
-                    + "#    - https\n"
-                    + "#    port: 443\n"
-                    + "#    key:\n"
-                    + "#    - https\n"
-                    + "#-   service-names:\n"
-                    + "#    - http\n"
-                    + "#    - https\n"
-                    + "#    port: 80\n"
-                    + "#    key:\n"
-                    + "#    - http\n"
-                )
-            # Manual Merge Rules
-            merge_file.write(
-                "\n\n# Manual merging rules.\n"
-                + "#\n# Make sure there is only one service name and banner "
-                + "for each port left\n"
-                + "# then execute scans2any again with option "
-                + "`--merge-file filename`\n"
             )
-            yaml.safe_dump(
+        else:
+            parts.append(_AUTOMERGE_TEMPLATE)
+        parts.append(_MANUAL_SECTION_HEADER)
+        parts.append(
+            yaml.dump(
                 {"manual-merge": manual_merge_altered_rules},
-                merge_file,
+                Dumper=SafeDumper,
                 indent=4,
                 sort_keys=True,
             )
-            if manual_merge_preserved_rules:
-                merge_file.write(
-                    textwrap.indent(
-                        yaml.safe_dump(
-                            manual_merge_preserved_rules, indent=4, sort_keys=True
-                        ),
-                        prefix="    ",
-                    )
-                )
-            # Custom entries
-            merge_file.write(
-                "\n\n# Custom entries\n"
-                + "#\n"
-                + "# Add custom entries in this way:\n"
-                + "custom-entries:\n"
-                + "#    1.1.1.1:\n"
-                + "#        hostnames:\n"
-                + "#           -   test.company.com\n"
-                + "#           -   test2.company.com\n"
-                + "#        os: linux\n"
-                + "#        ports:\n"
-                + "#           -   port: 1111/tcp\n"
-                + "#               service-name: test\n"
-                + "#               banner: Test description\n"
-                + "#           -   port: 2222/udp\n"
-                + "#               service-name: test2\n"
-                + "#               banner: Test description 2\n"
-                + "#    2.2.2.2:\n"
-                + "#        hostnames:\n"
-                + "#           -   asdf.company.local\n"
-                + "#        os: bsd\n"
-                + "#        ports:\n"
-                + "#           -   port: 333/tcp\n"
-                + "#               service-name: test\n"
-                + "#               banner: Test description 3"
+        )
+        if manual_merge_preserved_rules:
+            preserved_block = yaml.dump(
+                manual_merge_preserved_rules,
+                Dumper=SafeDumper,
+                indent=4,
+                sort_keys=True,
             )
+            parts.append(textwrap.indent(preserved_block, prefix="    "))
+        parts.append(_CUSTOM_SECTION_TEMPLATE)
+
+        with open(file_name, "w") as fh:
+            fh.write("".join(parts))
 
     def merge_os_sources(self):
         from scans2any.helpers.utils import (

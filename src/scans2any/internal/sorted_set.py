@@ -1,6 +1,8 @@
+"""Typed sorted set wrapper extending sortedcontainers.SortedSet."""
+
 from typing import TypeVar
 
-from sortedcontainers import SortedSet as BaseSortedSet  # type: ignore
+from sortedcontainers import SortedSet as BaseSortedSet
 
 T = TypeVar("T")
 

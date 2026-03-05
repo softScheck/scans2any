@@ -13,23 +13,26 @@ host = Host(
 )
 
 service_1 = Service(
-    22, "tcp", service_names=SortedSet(["ssh"]), banners=SortedSet(["OpenSSH 1.0"])
+    port=22,
+    protocol="tcp",
+    service_names=SortedSet(["ssh"]),
+    banners=SortedSet(["OpenSSH 1.0"]),
 )
 service_2 = Service(
-    80,
-    "tcp",
+    port=80,
+    protocol="tcp",
     service_names=SortedSet(["http", "www"]),
     banners=SortedSet(["Apache Web Server"]),
 )
 service_3 = Service(
-    443,
-    "tcp",
+    port=443,
+    protocol="tcp",
     service_names=SortedSet(["https"]),
     banners=SortedSet(["Apache Web Server"]),
 )
 service_4 = Service(
-    1111,
-    "udp",
+    port=1111,
+    protocol="udp",
     service_names=SortedSet(["unknown"]),
     banners=SortedSet(["Ok Banner", "", "unknown"]),
 )

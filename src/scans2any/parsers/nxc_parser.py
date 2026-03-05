@@ -5,6 +5,7 @@ SQLite Databases.
 """
 
 import sqlite3
+from pathlib import Path
 
 from scans2any.helpers.utils import find_os
 from scans2any.internal import Host, Infrastructure, Service, SortedSet
@@ -28,8 +29,12 @@ def add_arguments(parser):
     )
 
 
-def parse(filename: str) -> Infrastructure:
-    infra = Infrastructure(identifier="NetExec")
+def parse(filename: str | Path) -> Infrastructure:
+    # NXC is trusted for hostnames, OS, protocol, and service_names
+    infra = Infrastructure(
+        identifier="NetExec", trusted_fields={"service": ["protocol", "service_names"]}
+    )
+    hosts = []
     with sqlite3.connect(filename) as conn:
         cursor = conn.execute("SELECT ip, hostname, os, signing, smbv1 FROM hosts")
         for ip, hostname, os, signing, smbv1 in cursor:
@@ -45,6 +50,10 @@ def parse(filename: str) -> Infrastructure:
                 protocol="tcp",
                 service_names=SortedSet(["smb"]),
                 banners=SortedSet([banner]),
+                trusted_fields={
+                    "protocol",
+                    "service_names",
+                },  # NXC is accurate on these
             )
 
             os_result = find_os(os) if os else None
@@ -55,5 +64,6 @@ def parse(filename: str) -> Infrastructure:
             )
 
             host.services.append(service)
-            infra.hosts.append(host)
+            hosts.append(host)
+    infra.add_hosts(hosts)
     return infra

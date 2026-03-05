@@ -6,6 +6,8 @@ Currently only parses `JSON` output of aquatone.
 Tested with output from [aquatone-git](https://github.com/shelld3v/aquatone)
 """
 
+import contextlib
+from pathlib import Path
 from urllib.parse import urlparse
 
 from scans2any.helpers.utils import is_valid_ip, read_json
@@ -14,6 +16,11 @@ from scans2any.internal.service import get_port_by_service
 
 CONFIG = {
     "extensions": [".json"],
+}
+
+# Custom columns produced by this parser that can be requested via -c
+CUSTOM_COLUMNS: dict[str, str] = {
+    "http_status": "http_status",
 }
 
 
@@ -31,7 +38,7 @@ def add_arguments(parser):
     )
 
 
-def parse(filename: str) -> Infrastructure:
+def parse(filename: str | Path) -> Infrastructure:
     """
     Parses Aquatone report in potentially different output formats.
 
@@ -39,7 +46,7 @@ def parse(filename: str) -> Infrastructure:
 
     Parameters
     ----------
-    filename : str
+    filename : str | Path
         Path to `JSON` output file of aquatone tool.
 
     Returns
@@ -51,10 +58,15 @@ def parse(filename: str) -> Infrastructure:
         aquatone_hosts = __parse_json(filename)
     except Exception:
         raise
-    return Infrastructure(aquatone_hosts, "Aquatone")
+    # Aquatone is trusted for protocol and service_names
+    return Infrastructure(
+        aquatone_hosts,
+        "Aquatone",
+        trusted_fields={"service": ["protocol", "service_names"]},
+    )
 
 
-def __parse_json(filename: str) -> list[Host]:
+def __parse_json(filename: str | Path) -> list[Host]:
     """
     Parser for `JSON` output format of aquatone.
 
@@ -120,11 +132,22 @@ def __make_service(page: dict) -> Service:
     if server_header:
         banners.add(server_header)
 
+    # Ensure port is always an int - url.port is None for default ports
+    port: int = url.port or get_port_by_service(url.scheme, "tcp")
+
+    # Aquatone JSON includes the HTTP status code under key 'status'
+    custom_fields: dict[str, set] = {}
+    if "status" in page:
+        with contextlib.suppress(IndexError):
+            custom_fields["http_status"] = {page["status"][:3]}
+
     service = Service(
-        port=url.port if url.port else get_port_by_service(url.scheme, "tcp"),
-        protocol="tcp",
+        port=port,
+        protocol="tcp",  # TODO: technically could be udp (quic)
         service_names=SortedSet([url.scheme]),
         banners=banners,
+        custom_fields=custom_fields,
+        trusted_fields={"protocol", "service_names"},  # Aquatone is accurate on these
     )
 
     return service

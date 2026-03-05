@@ -5,7 +5,9 @@ CLI entrypoint of scans2any.
 """
 
 import concurrent.futures
+import logging
 import signal
+from pathlib import Path
 from sys import exit
 
 from scans2any.helpers.cli import (
@@ -25,9 +27,9 @@ from scans2any.helpers.infrastructure import (
 from scans2any.internal import printer
 from scans2any.writers import avail_writers, json_writer
 
-__version__ = "0.8.1.post18+a464b9f"
+__version__ = "1.0.0"
 
-executor: concurrent.futures.ThreadPoolExecutor | None = None
+executor: concurrent.futures.Executor | None = None
 
 # Handle SIGPIPE only on platforms that support it
 if hasattr(signal, "SIGPIPE"):
@@ -61,9 +63,18 @@ def main():
         return
 
     # Setup logging
-    printer.logging.getLogger().setLevel(25 - (args.verbose * 10))
+    log_format = "%(message)s"
+    if args.verbose >= 2:
+        log_format = "%(asctime)s.%(msecs)03d %(message)s"
+
+    logging.basicConfig(format=log_format, datefmt="%H:%M:%S")
+    logger = logging.getLogger("scans2any")
+    logger.setLevel(25 - (args.verbose * 10))
     if args.quiet:
-        printer.logging.getLogger().setLevel(printer.logging.ERROR)
+        logger.setLevel(logging.ERROR)
+
+    # Setup rich-aware logging handler for status spinner compatibility
+    printer.setup_logging_handler(log_format)
 
     # Parse merge file if provided
     merge_infra, auto_merge_ruleset = handle_merge_file(args.merge_file)
@@ -73,8 +84,7 @@ def main():
     global executor
 
     # Parse input files
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        all_infras = parse_input_files(args, parser, executor)
+    all_infras = parse_input_files(args, parser)
 
     # Check if the selected writer requires ignoring conflicts
     selected_writer = next(
@@ -88,19 +98,26 @@ def main():
         args.ignore_conflicts = True
 
     # Process infrastructure
-    combined_infra = combine_infrastructure_scans(all_infras, quiet=args.quiet)
+    verbose = args.verbose > 0
+    combined_infra = combine_infrastructure_scans(
+        all_infras, quiet=args.quiet, verbose=verbose
+    )
     printer.debug(combined_infra)
     combined_infra.merge_os_sources()
 
     # Apply filters
     filters = list(set(args.filters + args.enable_filters) - set(args.disable_filters))
     printer.debug(f"Enabled filters: {filters}")
-    apply_filters(combined_infra, filters, args)
+    apply_filters(combined_infra, filters, args, quiet=args.quiet, verbose=verbose)
 
     # Handle merging and conflicts
     try:
         combined_infra = resolve_infrastructure_conflicts(
-            combined_infra, merge_infra, auto_merge_ruleset
+            combined_infra,
+            merge_infra,
+            auto_merge_ruleset,
+            quiet=args.quiet,
+            verbose=verbose,
         )
         printer.debug(combined_infra)
     except Exception as e:
@@ -109,7 +126,7 @@ def main():
 
     # Apply automatic merging if not disabled
     if not args.no_auto_merge:
-        combined_infra.auto_merge()
+        combined_infra.auto_merge(quiet=args.quiet, verbose=verbose)
         printer.debug(combined_infra)
 
     # Check for remaining conflicts if not ignored
@@ -117,14 +134,16 @@ def main():
         combined_infra,
         passed_merge_file=bool(args.merge_file),
         buffer_file_path=args.buffer_file,
+        quiet=args.quiet,
+        verbose=verbose,
     ):
-        with open(args.buffer_file, "w") as f:
+        with Path(args.buffer_file).open("w") as f:
             f.write(json_writer.write(combined_infra, args))
         return
 
     # Sort and generate output
     combined_infra.sort()
-    output = generate_output(combined_infra, args)
+    output = generate_output(combined_infra, args, quiet=args.quiet, verbose=verbose)
 
     # Write output to file or print to stdout
     if args.out:
@@ -132,7 +151,7 @@ def main():
         if selected_writer and hasattr(selected_writer, "PROPERTIES"):
             mode = "wb" if selected_writer.PROPERTIES.get("binary", True) else "w"
 
-        with open(args.out, mode) as outfile:
+        with Path(args.out).open(mode) as outfile:
             outfile.write(output)
         printer.success(f"Written to output file: {args.out}")
     else:

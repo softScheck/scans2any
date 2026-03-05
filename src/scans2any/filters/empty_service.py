@@ -1,3 +1,5 @@
+"""Remove services with no identified service name or banner."""
+
 from scans2any.internal import Host
 
 PRIORITY = 3

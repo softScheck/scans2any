@@ -1,3 +1,5 @@
+"""Combine multiple service banners into a single merged banner string."""
+
 from scans2any.internal import Service, SortedSet
 
 PRIORITY = 3

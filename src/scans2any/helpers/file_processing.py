@@ -4,80 +4,133 @@ File processing utilities for scans2any.
 
 import concurrent.futures
 import os
+import sys
+from pathlib import Path
 
-from tqdm import tqdm
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 
 from scans2any.helpers.utils import is_special_fd
 from scans2any.internal import Infrastructure, printer
+from scans2any.internal.printer import _stderr_console, logger
 from scans2any.parsers import avail_parsers
 
 
-def process_file(parser_func, filename, progress_bar=None):
+def _worker_init(log_level: int) -> None:
+    """Initialize worker process with the correct log level."""
+    logger.setLevel(log_level)
+
+
+def _osc_progress_update(percentage: int) -> None:
+    """Send OSC 9;4 progress update to terminal emulators that support it.
+
+    Unsupported terminals silently ignore these codes.
+    """
+    os.write(sys.stderr.fileno(), f"\033]9;4;1;{percentage}\033\\".encode())
+
+
+def _osc_progress_end() -> None:
+    """Signal end of progress to terminal emulator."""
+    os.write(sys.stderr.fileno(), b"\033]9;4;0;\033\\")
+
+
+def process_file(parser_func, filename):
     """Process a single file with the given parser function."""
     try:
-        return parser_func(filename)
+        return parser_func(filename), None
     except Exception as e:
-        if progress_bar:
-            progress_bar.write(printer.warning(e, return_msg=True))
-        return None
+        return None, e
 
 
-def create_progress_bar(*, quiet=False) -> tqdm:
-    """Create a standardized progress bar."""
-    return tqdm(
-        ascii=" ▁▂▃▄▅▆▇█",
-        colour="green",
-        position=0,
-        leave=True,
-        disable=quiet,
+def create_progress_bar(*, quiet: bool = False, verbose: bool = False) -> Progress:
+    """Create a standardized rich progress bar that outputs to stderr."""
+    return Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(bar_width=40, complete_style="green", finished_style="bright_green"),
+        TaskProgressColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        console=_stderr_console,
+        disable=quiet or verbose,  # Disable in verbose mode to allow log output
+        transient=True,
     )
 
 
-def process_scan_files(
-    executor: concurrent.futures.ThreadPoolExecutor,
-    files: list[str],
-    parser_func,
+def collect_scan_results(
+    futures_map: dict[concurrent.futures.Future, Path],
     scan_type: str,
     *,
     quiet: bool = False,
+    verbose: bool = False,
 ) -> list[Infrastructure]:
-    """Process scan files with progress bar and return infrastructure objects."""
-    if not files:
+    """Collect results from futures with progress bar."""
+    if not futures_map:
         return []
 
-    pbar = create_progress_bar(quiet=quiet)
-    pbar.total = len(files)
-    pbar.set_description(f"Parsing {scan_type} scans")
-    futures = {executor.submit(process_file, parser_func, f, pbar): f for f in files}
-
     results: list[Infrastructure] = []
-    error_files: list[str] = []
+    error_files: list[str | Path] = []
     successful: int = 0
     hosts: int = 0
+    total = len(futures_map)
+    completed = 0
+
+    # In verbose mode, print section header since progress bar is disabled
+    if verbose:
+        printer.section(f"Parsing {scan_type} scans ({total} files)")
 
     try:
-        for future in concurrent.futures.as_completed(futures):
-            filename = futures[future]
-            result = future.result()
-            if result:
-                results.append(result)
-                successful += 1
-                hosts += len(result.hosts)
-            else:
-                error_files.append(filename)
-                pbar.write(
-                    printer.error(
-                        f"Failed to parse {scan_type} scan: {filename}", return_msg=True
+        with create_progress_bar(quiet=quiet, verbose=verbose) as progress:
+            printer.set_active_progress(progress)
+            task = progress.add_task(f"Parsing {scan_type} scans", total=total)
+
+            for future in concurrent.futures.as_completed(futures_map):
+                filename = futures_map[future]
+                try:
+                    result, error = future.result()
+                except Exception as e:
+                    result, error = None, e
+
+                if result:
+                    results.append(result)
+                    successful += 1
+                    hosts += len(result.hosts)
+                else:
+                    error_files.append(filename)
+                    progress.console.print(
+                        printer.error(
+                            f"Failed to parse {scan_type} scan: {filename}",
+                            return_msg=True,
+                        )
                     )
-                )
-            pbar.update(1)
+                    if error:
+                        progress.console.print(
+                            printer.warning(
+                                f"{type(error).__name__}: {error}", return_msg=True
+                            )
+                        )
+
+                completed += 1
+                progress.update(task, completed=completed)
+
+                # Update terminal tab progress bar
+                percentage = int((completed / total) * 100)
+                _osc_progress_update(percentage)
     finally:
-        pbar.close()
+        printer.set_active_progress(None)
+        _osc_progress_end()
 
     errors = len(error_files)
     if errors > 0:
         printer.warning(
-            f"Parsing of {len(files)} {scan_type} scans: {successful} "
+            f"Parsing of {len(futures_map)} {scan_type} scans: {successful} "
             f"successful, {errors} with errors:"
         )
         for f in error_files:
@@ -89,11 +142,7 @@ def process_scan_files(
     return results
 
 
-def parse_input_files(
-    args,
-    parser,
-    executor: concurrent.futures.ThreadPoolExecutor,
-) -> list[Infrastructure]:
+def parse_input_files(args, parser) -> list[Infrastructure]:
     """Parse all input files based on command line arguments."""
     input_args = {}
 
@@ -119,43 +168,46 @@ def parse_input_files(
     if not provided:
         parser.error("At least one input file argument must be provided.")
 
-    def find_all_files(paths: list | str, fileextensions: list[str]) -> list[str]:
+    def find_all_files(
+        paths: list | str | Path, fileextensions: list[str]
+    ) -> list[Path]:
         def find_all_files_from_path(
-            path: str, fileextensions: list[str], *, toplevel: bool = True
-        ) -> list[str]:
-            if os.path.isfile(path):
+            path: Path, fileextensions: list[str], *, toplevel: bool = True
+        ) -> list[Path]:
+            if path.is_file():
                 if toplevel:
                     return [path]
-                for extension in fileextensions:
-                    if path.endswith(extension):
-                        return [path]
+                if any(path.name.endswith(ext) for ext in fileextensions):
+                    return [path]
                 return []
             elif is_special_fd(path):
                 return [path]
-            output = []
-            if os.path.isdir(path):
-                for f in os.listdir(path):
-                    output += find_all_files_from_path(
-                        os.path.join(path, f), fileextensions, toplevel=False
-                    )
-            return output
+
+            if path.is_dir():
+                return [
+                    p
+                    for p in path.rglob("*")
+                    if p.is_file()
+                    and any(p.name.endswith(ext) for ext in fileextensions)
+                ]
+            return []
 
         def flatten_list(nested_list):
-            flat_list = []
             for item in nested_list:
                 if isinstance(item, list):
-                    flat_list.extend(flatten_list(item))
+                    yield from flatten_list(item)
                 else:
-                    flat_list.append(item)
-            return flat_list
+                    yield item
 
-        paths = flatten_list(paths)
+        paths = [Path(p) for p in flatten_list(paths)]
         output = []
         for path in paths:
-            output += find_all_files_from_path(path, fileextensions)
+            output.extend(find_all_files_from_path(path, fileextensions))
         return output
 
     all_infras = []
+    tasks = []  # List of (input_type, parser_func, files)
+    total_files_count = 0
 
     # Process each input type if provided
     for input_type, files in input_args.items():
@@ -169,16 +221,41 @@ def parse_input_files(
             continue
 
         config = avail_parsers[parser_name].CONFIG
-        printer.section(f"Parsing {input_type.capitalize()} Reports")
 
         input_files = find_all_files(files, config["extensions"])
+        if input_files:
+            tasks.append((input_type, avail_parsers[parser_name].parse, input_files))
+            total_files_count += len(input_files)
 
-        all_infras += process_scan_files(
-            executor=executor,
-            files=input_files,
-            parser_func=avail_parsers[parser_name].parse,
-            scan_type=input_type,
-            quiet=args.quiet,
+    # Adaptive strategy: Use ProcessPoolExecutor for large batches to bypass GIL,
+    # but ThreadPoolExecutor for small batches to avoid process startup overhead.
+    log_level = logger.level
+    use_processes = total_files_count >= 10
+
+    if use_processes:
+        executor = concurrent.futures.ProcessPoolExecutor(
+            initializer=_worker_init, initargs=(log_level,)
         )
+    else:
+        executor = concurrent.futures.ThreadPoolExecutor()
+
+    with executor:
+        # 1. Submit all tasks
+        future_groups = []
+        for input_type, parser_func, input_files in tasks:
+            futures_map = {
+                executor.submit(process_file, parser_func, f): f for f in input_files
+            }
+            future_groups.append((input_type, futures_map))
+
+        # 2. Collect results (preserving output order)
+        for input_type, futures_map in future_groups:
+            printer.status(f"Parsing {input_type.capitalize()} Scans")
+            all_infras += collect_scan_results(
+                futures_map,
+                scan_type=input_type,
+                quiet=args.quiet,
+                verbose=getattr(args, "verbose", 0) > 0,
+            )
 
     return all_infras

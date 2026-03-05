@@ -2,10 +2,7 @@
 
 import io
 
-import pandas as pd
-
 from scans2any.internal import Infrastructure, printer
-from scans2any.writers.dataframe_creator import create_dataframes, create_flat_dataframe
 
 NAME = "excel"
 PROPERTIES = {
@@ -47,6 +44,14 @@ def write(infra: Infrastructure, args) -> str | bytes:
     bytes
         The Excel file as bytes
     """
+    # Deferred imports: keeps pandas/numpy out of the startup critical path.
+    import pandas as pd
+
+    from scans2any.writers.dataframe_creator import (
+        create_dataframes,
+        create_flat_dataframe,
+    )
+
     # infra.cleanup_names("")
 
     output = io.BytesIO()

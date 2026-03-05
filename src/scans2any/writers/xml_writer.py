@@ -41,6 +41,9 @@ def add_ports(parent: ET.Element, container_tag: str, ports: dict | None) -> Non
                 port_elem, "services", port_data.get("service_names"), "service"
             )
             add_elements(port_elem, "banners", port_data.get("banners"), "banner")
+            for key, value in port_data.items():
+                if key not in ("service_names", "banners"):
+                    add_elements(port_elem, key, value, "item")
 
 
 def write(infra: Infrastructure, args) -> str:
@@ -59,6 +62,17 @@ def write(infra: Infrastructure, args) -> str:
 
         add_elements(host_elem, "hostnames", host_data.get("hostnames"), "hostname")
         add_elements(host_elem, "os_info", host_data.get("os"), "os")
+
+        for key, value in host_data.items():
+            if key not in (
+                "hostnames",
+                "os",
+                "tcp_ports",
+                "udp_ports",
+                "tcp_status",
+                "udp_status",
+            ):
+                add_elements(host_elem, key, value, "item")
 
         add_ports(host_elem, "tcp_ports", host_data.get("tcp_ports"))
         add_ports(host_elem, "udp_ports", host_data.get("udp_ports"))

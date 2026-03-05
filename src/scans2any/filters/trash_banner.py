@@ -1,3 +1,5 @@
+"""Remove uninformative or noisy banner entries from services."""
+
 import re
 
 from scans2any.internal import Service, SortedSet
@@ -45,10 +47,15 @@ def apply_filter(service: Service | None, args):
     filtered_banners = list(filtered_banners)
     to_remove = set()
 
-    for banner in filtered_banners:
-        for other in filtered_banners:
-            if banner != other and banner.lower() in other.lower():
-                to_remove.add(banner)  # Mark the smaller (contained) banner for removal
+    # Sort by length descending to efficiently find substrings
+    filtered_banners.sort(key=len, reverse=True)
+
+    for i, banner in enumerate(filtered_banners):
+        banner_lower = banner.lower()
+        for other in filtered_banners[:i]:
+            if banner_lower in other.lower():
+                to_remove.add(banner)
+                break
 
     # Remove only the elements marked for removal
     filtered_banners = SortedSet(

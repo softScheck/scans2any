@@ -1,5 +1,9 @@
+"""Host data model representing a single network host and its services."""
+
 import textwrap
 from typing import Any, Self  # Use class type inside of the same class
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from scans2any.internal import printer
 from scans2any.internal.service import OverridingNoConflictError, Service
@@ -10,15 +14,7 @@ class HostIntegrationError(Exception):
     pass
 
 
-class HostsUnionError(HostIntegrationError):
-    pass
-
-
-class MergeHostsError(HostIntegrationError):
-    pass
-
-
-class Host:
+class Host(BaseModel):
     """
     Internal representation of an IPv4 host and corresponding information.
 
@@ -39,35 +35,22 @@ class Host:
         Adds a new service to the host
     """
 
-    def __init__(
-        self,
-        *,
-        address: set[str] | SortedSet[str],
-        hostnames: set[str] | SortedSet[str],
-        os: set[tuple[str, str]] | SortedSet[str],
-    ):
-        """
-        Parameters
-        ----------
-        address : set[str] | SortedSet[str]
-            IP addresses of the host
-        hostnames : set[str] | SortedSet[str], optional
-            A list of corresponding hostnames
-        os : set[tuple] | SortedSet[str], optional
-            Operating system, if available
-        """
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
-        assert isinstance(address, set | SortedSet)
-        assert isinstance(hostnames, set | SortedSet)
-        assert isinstance(os, set | SortedSet)
+    address: set[str] | SortedSet[str]
+    hostnames: set[str] | SortedSet[str]
+    os: set[tuple[str, str]] | SortedSet[str]
+    services: list[Service] = Field(default_factory=list)
+    trusted_fields: set[str] = Field(default_factory=set)
+    custom_fields: dict[str, set] = Field(default_factory=dict)
 
-        self.address = address
-        self.hostnames = hostnames
-        self.services: list[Service] = []
-        self.os = os
-
-        # A host must always have at least one of address or hostname
-        assert self.address or self.hostnames
+    @model_validator(mode="after")
+    def check_address_or_hostname(self) -> Self:
+        if not self.address and not self.hostnames:
+            raise ValueError(
+                "A host must always have at least one of address or hostname"
+            )
+        return self
 
     def add_service(self, new_service: Service, *, prioritize_self: bool = False):
         """
@@ -111,18 +94,32 @@ class Host:
         self, new_services: list[Service], *, prioritize_self: bool = False
     ):
         """
-        Calls `self.add_service()` on every service in the list.
+        Adds multiple services to the host.
 
         Parameters
         ----------
-        service : list[Service]
+        new_services : list[Service]
             Service objects to be added to the list of services
         prioritize_self: bool
             Passed to calls of `self.add_service()`
         """
 
+        service_map = {(s.port, s.protocol): s for s in self.services}
+
         for new_service in new_services:
-            self.add_service(new_service, prioritize_self=prioritize_self)
+            key = (new_service.port, new_service.protocol)
+            if key in service_map:
+                service = service_map[key]
+                try:
+                    if prioritize_self:
+                        service.merge_with_service(new_service)
+                    else:
+                        service.union_with_service(new_service)
+                except OverridingNoConflictError as e:
+                    e.print_warning(self.identifier())
+            else:
+                self.services.append(new_service)
+                service_map[key] = new_service
 
     def remove_service(self, port: int):
         """
@@ -136,8 +133,10 @@ class Host:
         Removes services with ports in the specified port-range from the host.
         """
 
-        for port in range(ports[0], ports[1] + 1):
-            self.remove_service(port)
+        port_range = set(range(ports[0], ports[1] + 1))
+        self.services = [
+            service for service in self.services if service.port not in port_range
+        ]
 
     def get_service_by_port(self, port: int):
         """
@@ -152,7 +151,7 @@ class Host:
 
     def merge_with_host(self, other: Self):
         """
-        Merges other host with this one.
+        Merges other host with this one, respecting trusted fields.
 
         Parameters
         ----------
@@ -165,13 +164,48 @@ class Host:
         else:
             self.address.update(other.address)
 
-        # Union hostnames and merge services
-        self.hostnames.update(other.hostnames)
+        # Handle hostnames with trust priority
+        if "hostname" in other.trusted_fields and other.hostnames:
+            # Other has trusted hostnames, use them
+            self.hostnames = (
+                other.hostnames.copy()
+                if isinstance(other.hostnames, SortedSet)
+                else SortedSet(other.hostnames)
+            )
+            self.trusted_fields.add("hostname")
+        elif "hostname" not in self.trusted_fields:
+            # Self doesn't have trusted hostnames, union them
+            self.hostnames.update(other.hostnames)
+        # else: self has trusted hostnames, keep them and ignore other
+
+        # Merge services
         self.add_services(other.services, prioritize_self=True)
 
-        # Use other os if self has none
-        if not self.os:
+        # Handle OS with trust priority
+        if "os" in other.trusted_fields and other.os:
+            # Other has trusted OS, use it
+            self.os = (
+                other.os.copy()
+                if isinstance(other.os, SortedSet)
+                else SortedSet(other.os)
+            )
+            self.trusted_fields.add("os")
+        elif "os" not in self.trusted_fields and not self.os:
+            # Self has no OS and it's not trusted, use other's
             self.os = other.os
+        # else: self has trusted OS or already has OS, keep it
+
+        # Merge custom fields
+        for key, values in other.custom_fields.items():
+            if key in other.trusted_fields and values:
+                self.custom_fields[key] = values.copy()
+                self.trusted_fields.add(key)
+            elif key in self.trusted_fields:
+                pass
+            elif key not in self.custom_fields:
+                self.custom_fields[key] = values.copy()
+            else:
+                self.custom_fields[key].update(values)
 
     def union_with_host(self, other: Self):
         """
@@ -194,6 +228,17 @@ class Host:
 
         # Union os list
         self.os.update(other.os)
+
+        # Union custom fields
+        for key, values in other.custom_fields.items():
+            if key in other.trusted_fields and values:
+                self.custom_fields[key] = values.copy()
+                self.trusted_fields.add(key)
+            elif key not in self.trusted_fields:
+                if key not in self.custom_fields:
+                    self.custom_fields[key] = values.copy()
+                else:
+                    self.custom_fields[key].update(values)
 
     def identifier(self) -> str:
         """
@@ -269,3 +314,6 @@ class Host:
             s += textwrap.indent(f"{service}\n", "    ")
 
         return s
+
+    def __str__(self) -> str:
+        return self.__repr__()

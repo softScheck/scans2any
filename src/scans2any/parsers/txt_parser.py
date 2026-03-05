@@ -5,6 +5,7 @@ Parses formatted txt input to gather information.
 """
 
 from collections import defaultdict
+from pathlib import Path
 
 from scans2any.helpers.utils import is_valid_ip, match_dns
 from scans2any.internal import Host, Infrastructure
@@ -28,7 +29,7 @@ def add_arguments(parser):
     )
 
 
-def parse(filename: str) -> Infrastructure:
+def parse(filename: str | Path) -> Infrastructure:
     """
     Filename should be a plain text file.
     """
@@ -41,7 +42,7 @@ def parse(filename: str) -> Infrastructure:
     return infra
 
 
-def __parse_url_ip_format(filename: str) -> list[Host]:
+def __parse_url_ip_format(filename: str | Path) -> list[Host]:
     """
     Parser for plain text lines, formatted like:
     - `example.com 127.0.0.1` (hostname IP)

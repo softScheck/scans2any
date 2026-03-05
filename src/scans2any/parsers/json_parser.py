@@ -1,8 +1,15 @@
+"""Parse scans2any's own JSON export format back into an Infrastructure."""
+
 import json
 import re
+from pathlib import Path
 
 from scans2any.helpers.utils import is_valid_ip, read_json
 from scans2any.internal import Host, Infrastructure, Service, SortedSet
+
+# None signals that the JSON parser accepts arbitrary custom column names
+# because it reads key/value pairs from the file dynamically.
+CUSTOM_COLUMNS: dict[str, str] | None = None
 
 CONFIG = {
     "extensions": [".json"],
@@ -26,13 +33,13 @@ def add_arguments(parser):
 # This parser turns a json into an infrastructure, for more information on the
 # structure of the json, please see the json writer at
 # src/scans2any/writers/json_writer.py.
-def parse(filename: str) -> Infrastructure:
+def parse(filename: str | Path) -> Infrastructure:
     """
     Parses JSON infrastructure.
 
     Parameters
     ----------
-    filename : str
+    filename : str | Path
         Path to JSON output file.
 
     Returns
@@ -73,10 +80,27 @@ def __parse_json(infra: dict) -> list[Host]:
                 # The address is neither unknown nor valid.
                 # To avoid accepting invalid hosts, we discard the entire host.
                 raise
+
+        custom_fields = {}
+        for key, value in infra[ip].items():
+            if key not in (
+                "ip-addresses",
+                "hostnames",
+                "os",
+                "tcp_ports",
+                "udp_ports",
+                "tcp_status",
+                "udp_status",
+            ):
+                custom_fields[key] = (
+                    set(value) if isinstance(value, list) else set([value])
+                )
+
         host = Host(
             address=set(addresses),
-            hostnames=set(infra[ip].get("hostnames", [])),
-            os=set(os_origin_construct),
+            hostnames=SortedSet(infra[ip].get("hostnames", [])),
+            os=SortedSet(os_origin_construct),
+            custom_fields=custom_fields,
         )
         services = []
         for port in infra[ip].get("tcp_ports", []):
@@ -104,6 +128,11 @@ def __parse_json(infra: dict) -> list[Host]:
 
 
 def __new_service(port_dict: dict, port: str, protocol: str) -> Service:
+    custom_fields = {}
+    for key, value in port_dict[port].items():
+        if key not in ("service_names", "banners"):
+            custom_fields[key] = set(value) if isinstance(value, list) else set([value])
+
     service = Service(
         port=int(port),
         protocol=protocol,
@@ -113,5 +142,6 @@ def __new_service(port_dict: dict, port: str, protocol: str) -> Service:
         banners=SortedSet(
             port_dict[port].get("banners", []),
         ),
+        custom_fields=custom_fields,
     )
     return service

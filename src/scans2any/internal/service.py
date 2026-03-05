@@ -1,4 +1,8 @@
+"""Service data model representing a single network service on a host."""
+
 from typing import Self
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from scans2any.internal import printer
 from scans2any.internal.sorted_set import SortedSet
@@ -27,7 +31,7 @@ class OverridingNoConflictError(Exception):
             )
 
 
-class Service:
+class Service(BaseModel):
     """
     Internal representation of a service run by a host.
 
@@ -44,31 +48,21 @@ class Service:
         Additional information about the service, e.g. `Apache httpd x.y`
     """
 
-    def __init__(
-        self,
-        port: int,
-        protocol: str,
-        *,
-        service_names: SortedSet[str],
-        banners: SortedSet[str],
-    ):
-        assert type(port) is int
-        assert type(protocol) is str
-        assert type(service_names) is SortedSet
-        assert type(banners) is SortedSet
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
-        self.port = port
-        self.protocol = protocol
-        self.service_names = service_names
-        self.banners = banners
+    port: int
+    protocol: str
+    service_names: SortedSet[str]
+    banners: SortedSet[str]
+    trusted_fields: set[str] = Field(default_factory=set)
+    custom_fields: dict[str, set] = Field(default_factory=dict)
 
     def merge_with_service(self, other: Self):
         """
-        Merges this service with the specified service, using this service
-        (self) as priority to solve merge conflicts.
+        Merges this service with the specified service, respecting trusted fields.
 
-        Conflicting service names and banners from the other service will be
-        ignored.
+        Uses this service (self) as priority to solve merge conflicts, unless
+        the other service has trusted fields.
 
         Should not be called on services with different ports/protocols.
 
@@ -84,53 +78,111 @@ class Service:
         raise_service_name_override = False
         raise_banners_override = False
 
-        # Use own service name and banner, if set. Otherwise take from other
-        #
-        # If other has no conflicting entries, raise warning, because this is
-        # probably triggered by a merge file entry, and at least suspicious.
-
-        if not self.service_names:
+        # Handle service_names with trust priority
+        if "service_names" in other.trusted_fields and other.service_names:
+            # Other has trusted service names, use them
+            self.service_names = other.service_names.copy()
+            self.trusted_fields.add("service_names")
+        elif "service_names" in self.trusted_fields:
+            # Self has trusted service names, keep them
+            pass
+        elif not self.service_names:
+            # Self has no service names, use other's
             self.service_names = other.service_names
         elif len(other.service_names) == 1:
             raise_service_name_override = True
 
-        if not self.banners:
+        # Handle banners with trust priority
+        if "banners" in other.trusted_fields and other.banners:
+            # Other has trusted banners, use them
+            self.banners = other.banners.copy()
+            self.trusted_fields.add("banners")
+        elif "banners" in self.trusted_fields:
+            # Self has trusted banners, keep them
+            pass
+        elif not self.banners:
+            # Self has no banners, use other's
             self.banners = other.banners
         elif len(other.banners) == 1:
             raise_banners_override = True
 
-        # Raise exceptions on override without conflict
-        if raise_service_name_override or raise_banners_override:
+        # Handle protocol with trust priority
+        if "protocol" in other.trusted_fields and other.protocol:
+            self.protocol = other.protocol
+            self.trusted_fields.add("protocol")
+
+        # Raise exceptions on override without conflict (only if no trust involved)
+        if (
+            (raise_service_name_override or raise_banners_override)
+            and "service_names" not in self.trusted_fields
+            and "service_names" not in other.trusted_fields
+            and "banners" not in self.trusted_fields
+            and "banners" not in other.trusted_fields
+        ):
             raise OverridingNoConflictError(
                 port=self.port,
                 service_name=raise_service_name_override,
                 banners=raise_banners_override,
             )
 
+        # Merge custom fields
+        for key, values in other.custom_fields.items():
+            if key in other.trusted_fields and values:
+                self.custom_fields[key] = values.copy()
+                self.trusted_fields.add(key)
+            elif key in self.trusted_fields:
+                pass
+            elif key not in self.custom_fields:
+                self.custom_fields[key] = values.copy()
+            else:
+                self.custom_fields[key].update(values)
+
     def union_with_service(self, other: Self):
         """
-        Combine services with same `port` and `protocol`.
+        Combine services with same `port` and `protocol`, respecting trusted fields.
 
-        Unions service names.
-
-        Unions banners lists.
+        Unions service names and banners unless one source is trusted.
 
         Should not be called on services with different ports/protocols.
 
         Parameters
         ----------
         other : Self
-            Other host instance to be integrated into this one
+            Other service instance to be integrated into this one
         """
 
         assert self.port == other.port
         assert self.protocol == other.protocol
 
-        # Merge services names by updating the set
-        self.service_names.update(other.service_names)
+        # Handle service_names with trust priority
+        if "service_names" in other.trusted_fields and other.service_names:
+            self.service_names = other.service_names.copy()
+            self.trusted_fields.add("service_names")
+        elif "service_names" not in self.trusted_fields:
+            self.service_names.update(other.service_names)
 
-        # Merge banners by updating the set
-        self.banners.update(other.banners)
+        # Handle banners with trust priority
+        if "banners" in other.trusted_fields and other.banners:
+            self.banners = other.banners.copy()
+            self.trusted_fields.add("banners")
+        elif "banners" not in self.trusted_fields:
+            self.banners.update(other.banners)
+
+        # Handle protocol with trust priority
+        if "protocol" in other.trusted_fields:
+            self.protocol = other.protocol
+            self.trusted_fields.add("protocol")
+
+        # Union custom fields
+        for key, values in other.custom_fields.items():
+            if key in other.trusted_fields and values:
+                self.custom_fields[key] = values.copy()
+                self.trusted_fields.add(key)
+            elif key not in self.trusted_fields:
+                if key not in self.custom_fields:
+                    self.custom_fields[key] = values.copy()
+                else:
+                    self.custom_fields[key].update(values)
 
     def __repr__(self) -> str:
         """
@@ -141,6 +193,9 @@ class Service:
         if self.banners:
             s += f"\n    {self.banners}"
         return s
+
+    def __str__(self) -> str:
+        return self.__repr__()
 
 
 def get_port_by_service(service: str, protocol: str) -> int:
@@ -163,5 +218,5 @@ def get_port_by_service(service: str, protocol: str) -> int:
     tcp_map = {"http": 80, "https": 443}
 
     if protocol == "tcp":
-        return tcp_map[service]
+        return tcp_map.get(service, 80)  # Default to port 80 if not found
     raise Exception("protocol not defined")

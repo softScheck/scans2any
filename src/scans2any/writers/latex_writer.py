@@ -1,9 +1,6 @@
 """Prints a LaTeX representation of the infrastructure."""
 
-import pandas as pd
-
 from scans2any.internal import Infrastructure, printer
-from scans2any.writers.dataframe_creator import create_dataframes
 
 NAME = "latex"
 PROPERTIES = {
@@ -31,6 +28,11 @@ def write(infra: Infrastructure, args) -> str:
     str
         The LaTeX representation of the infrastructure
     """
+    # Deferred imports: keeps pandas/numpy out of the startup critical path.
+    import pandas as pd
+
+    from scans2any.writers.dataframe_creator import create_dataframes
+
     infra.cleanup_names('{}\\_$%"')
 
     # Create DataFrames
@@ -55,9 +57,11 @@ def write(infra: Infrastructure, args) -> str:
             ]
         )
         df = df.map(
-            lambda x: f"\\makecell[l]{{{x.replace('\n', ' \\\\ ')}}}"
-            if isinstance(x, str)
-            else x
+            lambda x: (
+                f"\\makecell[l]{{{x.replace('\n', ' \\\\ ')}}}"
+                if isinstance(x, str)
+                else x
+            )
         )
         latex_table = df.to_latex(
             index=False,
