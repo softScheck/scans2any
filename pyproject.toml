@@ -1,47 +1,63 @@
 [project]
 name = "scans2any"
-version = "1.0.0"
+version = "0.9.0"
 description = "Convert infrastructure scans into various output formats such as Markdown tables, YAML, HTML, CSV, and more"
 readme = "README.md"
 requires-python = ">=3.12"
+license = "AGPL-3.0-or-later"
+authors = [
+    { name = "softScheck", email = "info@softscheck.com" },
+]
+keywords = [
+    "infrastructure",
+    "pentesting",
+    "report",
+    "security",
+]
+classifiers = [
+    "Environment :: Console",
+    "Framework :: Pytest",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Topic :: Security",
+    "Topic :: Text Processing",
+]
 packages = [
     { include = "scans2any", from = "src" },
 ]
 dependencies = [
-    "python-libnmap>=0.7.3",
-    "pandas>=2.2.2",
-    "pyyaml>=6.0.2",
-    "tabulate>=0.9.0",
-    "sortedcontainers>=2.4.0",
     "defusedxml>=0.7.1",
-    "partial-json-parser>=0.2.1.1.post4",
-    "rich>=13.0.0",
+    "jinja2>=3.1.6",
     "openpyxl>=3.1.5",
-    "jinja2>=3.1.5",
-    "wcwidth>=0.2.13",
-    "pydantic>=2.0.0",
+    "pandas>=3.0.1",
+    "partial-json-parser>=0.2.1.1.post7",
+    "pydantic>=2.12.5",
+    "python-libnmap>=0.7.3",
+    "pyyaml>=6.0.3",
+    "rich>=14.3.3",
+    "sortedcontainers>=2.4.0",
+    "tabulate>=0.10.0",
+    "wcwidth>=0.6.0",
 ]
 
-[dependency-groups]
-dev = [
-    "ty>=0.0.1a21",
-    "pandas-stubs>=2.2.3.241009",
-    "pytest>=8.3.3",
-    "types-pyyaml>=6.0.12.20240917",
-	"dunamai>1.0",
-    "syrupy>=4.0.0",
-]
+[project.urls]
+Homepage = "https://www.softscheck.com"
+Repository = "https://github.com/softScheck/scans2any"
 
 [project.scripts]
 scans2any = "scans2any.main:main"
 
-[tool.uv]
-native-tls = true
-publish-url = "https://pypi.softscheck.local"
+[dependency-groups]
+dev = [
+    "dunamai>=1.26.0",
+    "pandas-stubs>=3.0.0.260204",
+    "pytest>=9.0.2",
+    "syrupy>=5.1.0",
+    "ty>=0.0.21",
+    "types-pyyaml>=6.0.12.20250915",
+]
 
 [build-system]
-requires = [
-    "hatchling",
-]
+requires = ["hatchling"]
 build-backend = "hatchling.build"
-
